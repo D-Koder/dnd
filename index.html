@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Veyrune</title>
+<style>
+  :root{
+    --bg:#0F1E1D; --panel:#16302D; --panel-alt:#1E3E3A; --line:#2E4B47;
+    --cream:#E8DCC4; --cream-dim:#A8B3A6; --brass:#C9704A; --brass-dim:#8A4E34;
+    --teal:#4FB3A9; --violet:#8B6BB8; --danger:#B8503F;
+    --mono:'Courier New', ui-monospace, monospace; --serif:Georgia,'Times New Roman',serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{ height:100%; margin:0; }
+  body{
+    color:var(--cream); font-family:var(--serif); background-color:var(--bg);
+    background-image:
+      radial-gradient(circle at 15% 8%, rgba(79,179,169,0.09), transparent 45%),
+      radial-gradient(circle at 85% 15%, rgba(139,107,184,0.07), transparent 40%),
+      radial-gradient(circle at 75% 95%, rgba(201,112,74,0.08), transparent 45%),
+      repeating-linear-gradient(115deg, rgba(232,220,196,0.015) 0px, rgba(232,220,196,0.015) 2px, transparent 2px, transparent 5px),
+      linear-gradient(160deg, #0F1E1D 0%, #0C1A19 55%, #0F1F1C 100%);
+    overflow:hidden;
+  }
+  #map-bg{ position:fixed; inset:0; z-index:-2; background-size:cover; background-position:center;
+    opacity:0; transition:opacity 1.4s ease; filter:sepia(25%) saturate(80%) brightness(0.5); }
+  #map-bg.loaded{ opacity:1; }
+  #map-wash{ position:fixed; inset:0; z-index:-1;
+    background:linear-gradient(180deg, rgba(15,30,29,0.8) 0%, rgba(15,30,29,0.6) 40%, rgba(15,30,29,0.88) 100%); }
+  .scanlines{ position:fixed; inset:0; pointer-events:none; z-index:40;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,0.05) 0px, rgba(0,0,0,0.05) 1px, transparent 1px, transparent 3px);
+    opacity:0.3; mix-blend-mode:overlay; }
+
+  #app{ display:flex; flex-direction:column; height:100vh; max-width:640px; margin:0 auto; position:relative; }
+
+  /* ---- bottom tab bar: underline nav, not icon chips ---- */
+  .tab-bar{
+    display:flex; flex-shrink:0; background:rgba(19,42,39,0.9); backdrop-filter:blur(12px) saturate(130%);
+    border-top:1px solid var(--line);
+  }
+  .tab-bar button{
+    flex:1; background:none; border:none; border-bottom:2px solid transparent; color:var(--cream-dim); cursor:pointer;
+    padding:11px 2px 9px; font-family:var(--mono); font-size:10px; letter-spacing:1.5px; text-transform:uppercase;
+  }
+  .tab-bar button.active{ color:var(--teal); border-bottom-color:var(--teal); }
+  .tab-bar button:hover{ color:var(--cream); }
+
+  .tab-panel{ flex:1; overflow-y:auto; padding:18px 16px 24px; }
+  .tab-panel h2{
+    font-family:var(--mono); font-size:12px; letter-spacing:3px; text-transform:uppercase;
+    color:var(--brass); margin:0 0 16px; display:flex; align-items:center; gap:8px;
+    border-bottom:1px solid var(--line); padding-bottom:10px;
+  }
+  .tab-panel .subhead{ font-family:var(--mono); font-size:10px; color:var(--cream-dim); margin:20px 0 8px; letter-spacing:2px; text-transform:uppercase; }
+  .tab-icon-inline{ width:13px; height:13px; color:var(--brass); flex-shrink:0; }
+
+  /* ---- status strip ---- */
+  .status-strip{
+    display:flex; flex-direction:column; gap:6px; padding:11px 16px;
+    background:rgba(19,42,39,0.85); backdrop-filter:blur(10px) saturate(130%);
+    border-bottom:1px solid var(--line); font-family:var(--mono); font-size:11px;
+    cursor:pointer; flex-shrink:0;
+  }
+  .status-strip .top-row{ display:flex; align-items:center; gap:12px; }
+  .status-strip .glyph{ width:20px; height:20px; color:var(--brass); flex-shrink:0; }
+  .status-strip .stats{ display:flex; gap:16px; color:var(--cream-dim); letter-spacing:0.5px; white-space:nowrap; }
+  .status-strip .stats b{ color:var(--brass); font-weight:normal; }
+  .status-strip .edit-hint{ margin-left:auto; color:var(--cream-dim); opacity:0.4; font-size:9px; letter-spacing:1px; text-transform:uppercase; white-space:nowrap; flex-shrink:0; }
+  .status-strip .quest-row{ font-size:10px; color:var(--cream-dim); padding-left:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .status-strip .quest-row b{ color:var(--brass); font-weight:normal; }
+
+  /* ---- chat feed: console log, not messenger bubbles ---- */
+  #feed{ flex:1; overflow-y:auto; padding:18px 16px 10px; display:flex; flex-direction:column; gap:4px; }
+  .turn-divider{ display:flex; align-items:center; gap:8px; margin:14px 0 10px; opacity:0.4; }
+  .turn-divider .glyph{ width:12px; height:12px; color:var(--brass); flex-shrink:0; }
+  .turn-divider .line{ flex:1; height:1px; background:var(--line); }
+  .msg-dm{ font-family:var(--serif); font-size:15px; line-height:1.75; color:var(--cream); }
+  .msg-companion{ font-family:var(--mono); font-size:12px; padding-left:12px; border-left:2px solid var(--brass); margin-top:8px; color:var(--cream-dim); }
+  .msg-companion b{ color:var(--brass); letter-spacing:0.5px; font-size:10px; }
+  .speaker-tag{
+    display:inline-block; font-family:var(--mono); font-size:10px; letter-spacing:1px;
+    color:var(--brass); opacity:0.75; margin-right:8px; vertical-align:2px;
+  }
+  .msg-player{
+    font-family:var(--mono); font-size:13px; color:var(--teal); margin-top:14px; padding-left:0;
+  }
+  .msg-player .speaker-tag{ color:var(--teal); }
+  .msg-roll{
+    font-family:var(--mono); font-size:11px; color:var(--brass); letter-spacing:0.5px;
+    border-left:2px solid var(--brass); padding-left:10px; margin-top:6px;
+  }
+  .msg-roll .speaker-tag{ margin-right:6px; }
+  .msg-note{ font-family:var(--mono); font-size:11px; color:var(--cream-dim); font-style:italic; margin-top:6px; }
+  .msg-thinking{ font-family:var(--mono); font-size:11px; color:var(--teal); opacity:0.7; letter-spacing:1px; text-transform:uppercase; }
+  .msg-thinking::after{ content:''; display:inline-block; width:6px; }
+
+  .enemy-strip{ padding:9px 16px; background:rgba(30,62,58,0.75); border-top:1px solid var(--line);
+    font-family:var(--mono); font-size:11px; flex-shrink:0; letter-spacing:0.5px; text-transform:uppercase; }
+  .enemy-strip .hp-bar{ height:5px; background:var(--bg); border:1px solid var(--line); overflow:hidden; margin-top:5px; }
+  .enemy-strip .hp-fill{ height:100%; background:var(--danger); transition:width .3s; }
+
+  .options-row{ display:flex; flex-direction:column; gap:1px; padding:10px 16px 0; flex-shrink:0; border-top:1px solid var(--line); }
+  .options-row button{
+    background:none; border:none; border-bottom:1px dashed var(--line); color:var(--cream-dim);
+    font-family:var(--mono); font-size:12px; padding:9px 2px; cursor:pointer; text-align:left; letter-spacing:0.3px;
+  }
+  .options-row button:hover{ color:var(--teal); }
+  .options-row button:last-child{ border-bottom:none; }
+
+  /* ---- composer: terminal prompt, not a messenger pill ---- */
+  .composer{ display:flex; align-items:center; gap:10px; padding:12px 16px; flex-shrink:0;
+    background:rgba(19,42,39,0.9); backdrop-filter:blur(10px) saturate(130%); border-top:1px solid var(--line); }
+  .composer input[type=text]{
+    flex:1; background:none; border:none; border-bottom:1px solid var(--line); color:var(--cream);
+    padding:8px 2px; font-family:var(--mono); font-size:13px; border-radius:0;
+  }
+  .composer input[type=text]:focus{ outline:none; border-bottom-color:var(--teal); }
+  .composer input[type=text]::placeholder{ color:var(--cream-dim); opacity:0.5; }
+  .icon-btn{
+    background:none; border:1px solid var(--line); color:var(--cream-dim); width:34px; height:34px;
+    border-radius:2px; cursor:pointer; font-size:15px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  }
+  .icon-btn:hover{ border-color:var(--teal); color:var(--teal); }
+  .icon-btn.send{ background:var(--brass-dim); border-color:var(--brass); color:var(--cream); font-family:var(--mono); font-size:11px; letter-spacing:1.5px; width:auto; padding:0 14px; }
+  .icon-btn.send:hover{ background:var(--brass); }
+
+  /* ---- modal overlay ---- */
+  .overlay{ position:fixed; inset:0; background:rgba(6,14,13,0.72); backdrop-filter:blur(3px);
+    display:flex; align-items:flex-end; justify-content:center; z-index:60; }
+  @media (min-width:640px){ .overlay{ align-items:center; } }
+  .sheet{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px 10px 0 0;
+    width:100%; max-width:520px; padding:20px; animation:slideup .2s ease;
+  }
+  @media (min-width:640px){ .sheet{ border-radius:10px; } }
+  @keyframes slideup{ from{ transform:translateY(20px); opacity:0; } to{ transform:translateY(0); opacity:1; } }
+  .sheet h3{ font-family:var(--mono); font-size:13px; letter-spacing:1.5px; text-transform:uppercase; color:var(--brass); margin:0 0 14px; }
+  .sheet .flavor{ font-family:var(--serif); font-style:italic; color:var(--cream-dim); font-size:13px; margin-bottom:14px; }
+  .die-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px; }
+  .die-grid button{
+    background:var(--bg); border:1px solid var(--line); color:var(--cream); font-family:var(--mono);
+    padding:14px 0; border-radius:2px; cursor:pointer; font-size:14px;
+  }
+  .die-grid button.active{ border-color:var(--teal); color:var(--teal); }
+  .roll-result{ text-align:center; font-family:var(--mono); font-size:28px; color:var(--brass); margin:10px 0; }
+  .roll-detail{ text-align:center; font-family:var(--mono); font-size:12px; color:var(--cream-dim); }
+  label{ font-family:var(--mono); font-size:11px; color:var(--cream-dim); text-transform:uppercase; letter-spacing:1px; display:block; margin-bottom:6px; }
+  select, textarea{ background:var(--bg); border:1px solid var(--line); color:var(--cream); padding:8px 10px;
+    font-family:var(--mono); font-size:13px; border-radius:2px; width:100%; }
+  textarea{ font-family:var(--serif); font-size:13px; resize:vertical; }
+  .field{ margin-bottom:14px; }
+  .charge-btns{ display:flex; gap:6px; flex-wrap:wrap; }
+  .charge-btns button{ font-family:var(--mono); font-size:11px; padding:7px 11px; background:var(--bg);
+    border:1px solid var(--line); color:var(--cream-dim); cursor:pointer; border-radius:2px; }
+  .charge-btns button.active{ border-color:var(--violet); color:var(--violet); }
+  .sheet-actions{ display:flex; gap:8px; margin-top:16px; }
+  .sheet-actions button{ flex:1; font-family:var(--mono); font-size:12px; letter-spacing:1px; text-transform:uppercase;
+    padding:11px 0; border-radius:2px; cursor:pointer; }
+  .btn-primary{ background:var(--brass-dim); border:1px solid var(--brass); color:var(--cream); }
+  .btn-primary:hover{ background:var(--brass); }
+  .btn-secondary{ background:transparent; border:1px solid var(--line); color:var(--cream-dim); }
+  .btn-secondary:hover{ border-color:var(--cream-dim); color:var(--cream); }
+  .menu-item{ display:block; width:100%; text-align:left; background:none; border:none; color:var(--cream);
+    font-family:var(--mono); font-size:13px; padding:12px 4px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .menu-item:last-child{ border-bottom:none; }
+  .menu-item:hover{ color:var(--teal); }
+  .inv-list{ list-style:none; padding:0; margin:0; max-height:220px; overflow-y:auto; }
+  .inv-list li{ font-family:var(--mono); font-size:13px; padding:6px 0; border-bottom:1px dashed var(--line); }
+
+  .ref-card{
+    background:rgba(30,62,58,0.55); border:1px solid rgba(46,75,71,0.8); border-radius:2px;
+    padding:12px; margin-bottom:10px; backdrop-filter:blur(6px) saturate(120%);
+  }
+  .ref-card img{ width:100%; max-height:180px; object-fit:cover; border-radius:2px; margin-bottom:8px; border:1px solid var(--line); filter:sepia(15%) saturate(90%); }
+  .ref-card .rc-name{ font-family:var(--mono); color:var(--teal); font-size:13px; letter-spacing:0.5px; text-transform:uppercase; margin-bottom:3px; }
+  .ref-card .rc-meta{ font-family:var(--mono); font-size:11px; color:var(--cream-dim); }
+  .ref-row{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; align-items:flex-end; }
+  .ref-row .field-mini{ flex:1; min-width:120px; }
+  .ref-row select{ width:100%; }
+  .pill-btn{
+    background:var(--brass-dim); border:1px solid var(--brass); color:var(--cream);
+    padding:9px 16px; font-family:var(--mono); font-size:12px; letter-spacing:1px; text-transform:uppercase;
+    cursor:pointer; border-radius:2px; white-space:nowrap; letter-spacing:1px;
+  }
+  .pill-btn:hover{ background:var(--brass); }
+  .inv-remove{ background:none; border:none; color:var(--danger); cursor:pointer; font-family:var(--mono); font-size:11px; }
+  .status-field{ margin-bottom:16px; }
+</style>
+</head>
+<body>
+<div class="scanlines"></div>
+<div id="map-bg"></div>
+<div id="map-wash"></div>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="glyph" viewBox="0 0 100 100">
+      <circle cx="35" cy="40" r="22" fill="none" stroke="currentColor" stroke-width="4"/>
+      <circle cx="65" cy="40" r="22" fill="none" stroke="currentColor" stroke-width="4"/>
+      <circle cx="50" cy="65" r="22" fill="none" stroke="currentColor" stroke-width="4"/>
+      <path d="M10 85 L35 60 L45 78 L60 55 L90 85" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div id="app"></div>
+
+<script>
+// ============================================================
+// STATE
+// ============================================================
+const state = {
+  character: {
+    name:'Raken', species:'Coralkin', klass:'Tech Mage Schemer',
+    hp:'Healthy', magicCharge:'stone',
+    quest:'The Hum Job — Port Halloway hull, Anchor-7',
+    inventory:['Modified focus-tool','Relic-scanning kit','Relic fragment (reactive)','Rusted key (in pedestal)','Dormant egg-object (unpaired)']
+  },
+  combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
+  chat: [
+    { type:'dm', text:"You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] }
+  ],
+  lastOptions: [],
+  saveWorthy: [],
+  loading: false,
+  modal: null, // { kind:'dice'|'item'|'edit'|'menu'|'inventory', ...payload }
+  tab: 'chat', // 'chat' | 'bestiary' | 'spells' | 'inventory' | 'status'
+  bestiary: { type:'humanoid', results:[], status:'' },
+  spells: { level:0, results:[], status:'' },
+};
+
+function glyph(cls){ return `<svg class="glyph ${cls||''}"><use href="#glyph"/></svg>`; }
+function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s){ return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
+
+function magicMod(){
+  if(state.character.magicCharge==='wet') return 3;
+  if(state.character.magicCharge==='water' || state.character.magicCharge==='stone') return 2;
+  return -2;
+}
+function magicLabel(){
+  return {water:'Near Water', stone:'On Stone', wet:'Wet Earth', none:'Ungrounded'}[state.character.magicCharge];
+}
+function rollDie(sides){ return Math.floor(Math.random()*sides)+1; }
+
+// ============================================================
+// RENDER — SHELL
+// ============================================================
+function render(){
+  const app = document.getElementById('app');
+  const isChat = state.tab === 'chat';
+  app.innerHTML = `
+    <div class="status-strip" onclick="openEditModal()">
+      <div class="top-row">
+        ${glyph()}
+        <div class="stats">
+          <span>❤ <b>${state.character.hp}</b></span>
+          <span>💧🪨 <b>${magicLabel()}</b></span>
+        </div>
+        <div class="edit-hint">tap to edit</div>
+      </div>
+      <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
+    </div>
+    ${isChat ? `
+      <div id="feed">${state.chat.map(renderChatItem).join('')}${state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : ''}</div>
+      ${state.combat.active ? renderEnemyStrip() : ''}
+      ${state.lastOptions.length && !state.loading ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
+      <div class="composer">
+        <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)">⚄</button>
+        <input type="text" id="composer-input" placeholder="What do you do?" onkeydown="if(event.key==='Enter') submitFreeform()">
+        <button class="icon-btn send" title="Send" onclick="submitFreeform()">SEND</button>
+      </div>
+    ` : `<div class="tab-panel">${renderTabPanel()}</div>`}
+    <div class="tab-bar">
+      <button class="${state.tab==='chat'?'active':''}" onclick="setTab('chat')">Chat</button>
+      <button class="${state.tab==='bestiary'?'active':''}" onclick="setTab('bestiary')">Bestiary</button>
+      <button class="${state.tab==='spells'?'active':''}" onclick="setTab('spells')">Spells</button>
+      <button class="${state.tab==='inventory'?'active':''}" onclick="setTab('inventory')">Inventory</button>
+      <button class="${state.tab==='status'?'active':''}" onclick="setTab('status')">Status</button>
+    </div>
+    ${renderModal()}
+  `;
+  const feed = document.getElementById('feed');
+  if(feed) feed.scrollTop = feed.scrollHeight;
+}
+function setTab(t){ state.tab = t; render(); }
+function renderTabPanel(){
+  if(state.tab==='bestiary') return renderBestiaryTab();
+  if(state.tab==='spells') return renderSpellsTab();
+  if(state.tab==='inventory') return renderInventoryTab();
+  if(state.tab==='status') return renderStatusTab();
+  return '';
+}
+
+function renderChatItem(m, i){
+  if(m.type==='dm'){
+    const divider = i>0 ? `<div class="turn-divider">${glyph()}<div class="line"></div></div>` : '';
+    return `${divider}<div class="msg-dm"><span class="speaker-tag">[DM]</span>${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
+  }
+  if(m.type==='player') return `<div class="msg-player"><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
+  if(m.type==='roll') return `<div class="msg-roll"><span class="speaker-tag">[ROLL]</span>${escHtml(m.text)}</div>`;
+  if(m.type==='note') return `<div class="msg-note"><span class="speaker-tag">[NOTE]</span>${escHtml(m.text)}</div>`;
+  return '';
+}
+function renderEnemyStrip(){
+  const c = state.combat;
+  const pct = c.creatureMaxHp>0 ? Math.max(0,(c.creatureHp/c.creatureMaxHp)*100) : 0;
+  return `<div class="enemy-strip">
+    ⚔️ ${escHtml(c.creatureName)} — ${c.creatureHp}/${c.creatureMaxHp} HP
+    <div class="hp-bar"><div class="hp-fill" style="width:${pct}%"></div></div>
+  </div>`;
+}
+
+// ============================================================
+// MODALS
+// ============================================================
+function renderModal(){
+  if(!state.modal) return '';
+  const m = state.modal;
+  if(m.kind==='dice') return renderDiceModal(m);
+  if(m.kind==='item') return renderItemModal(m);
+  if(m.kind==='edit') return renderEditModal();
+  return '';
+}
+function closeModal(){ state.modal = null; render(); }
+
+// ---- Dice modal ----
+function openDiceModal(requirement){
+  // requirement: { die, reason } when the DM asked for a specific roll; null for a manual/quick roll
+  state.modal = { kind:'dice', requirement, chosenDie: requirement ? requirement.die : 'd20', result:null };
+  render();
+}
+function renderDiceModal(m){
+  const dice = ['d4','d6','d8','d10','d12','d20'];
+  const isRequested = !!m.requirement;
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>${isRequested ? 'DM Requests a Roll' : 'Quick Roll'}</h3>
+      <div class="flavor">${isRequested ? escHtml(m.requirement.reason || 'Roll to see what happens.') : 'Not sent to the DM — just for you.'}</div>
+      ${!isRequested ? `<div class="die-grid">${dice.map(d=>`<button class="${m.chosenDie===d?'active':''}" onclick="pickDie('${d}')">${d}</button>`).join('')}</div>` : `<div class="flavor" style="margin-top:-8px;">Rolling ${m.requirement.die}${m.requirement.die==='d20'?` with your ${magicMod()>=0?'+':''}${magicMod()} grounding modifier`:''}.</div>`}
+      ${m.result===null ? `
+        <div class="sheet-actions"><button class="btn-primary" onclick="doRoll()">Roll ${m.chosenDie}</button></div>
+      ` : `
+        <div class="roll-result">${m.result.total}</div>
+        <div class="roll-detail">rolled ${m.result.roll}${m.result.mod?` ${m.result.mod>=0?'+':''}${m.result.mod}`:''} on ${m.chosenDie}</div>
+        <div class="sheet-actions"><button class="btn-primary" onclick="confirmRoll()">${isRequested ? 'Send to DM' : 'Done'}</button></div>
+      `}
+    </div>
+  </div>`;
+}
+function pickDie(d){ state.modal.chosenDie = d; render(); }
+function doRoll(){
+  const m = state.modal;
+  const sides = parseInt(m.chosenDie.slice(1),10);
+  const roll = rollDie(sides);
+  const mod = (m.chosenDie==='d20') ? magicMod() : 0;
+  m.result = { roll, mod, total: roll+mod };
+  render();
+}
+function confirmRoll(){
+  const m = state.modal;
+  const label = `Rolled ${m.chosenDie}: ${m.result.roll}${m.result.mod?` (${m.result.mod>=0?'+':''}${m.result.mod} = ${m.result.total})`:''}`;
+  state.chat.push({ type:'roll', text: label });
+  if(m.requirement){
+    const resolution = { die:m.chosenDie, roll:m.result.roll, modifier:m.result.mod, total:m.result.total, reason:m.requirement.reason };
+    state.modal = null;
+    sendAction(`(rolled for: ${m.requirement.reason})`, false, resolution);
+  } else {
+    state.modal = null;
+    render();
+  }
+}
+
+// ---- Item modal ----
+function renderItemModal(m){
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Item Found</h3>
+      <div style="font-family:var(--mono); color:var(--teal); font-size:14px; margin-bottom:6px;">${escHtml(m.item.name)}</div>
+      <div class="flavor">${escHtml(m.item.desc || '')}</div>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="resolveItem(false)">Leave it</button>
+        <button class="btn-primary" onclick="resolveItem(true)">Keep it</button>
+      </div>
+    </div>
+  </div>`;
+}
+function resolveItem(keep){
+  const item = state.modal.item;
+  if(keep){
+    state.character.inventory.push(item.name);
+    state.chat.push({ type:'note', text:`🎒 Added to inventory: ${item.name}` });
+  } else {
+    state.chat.push({ type:'note', text:`Left behind: ${item.name}` });
+  }
+  state.modal = null;
+  render();
+}
+
+// ---- Edit character modal ----
+function openEditModal(){
+  state.modal = { kind:'edit', hp:state.character.hp, grounding:state.character.magicCharge, quest:state.character.quest };
+  render();
+}
+function renderEditModal(){
+  const m = state.modal;
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>Edit Status</h3>
+      <div class="field">
+        <label>HP</label>
+        <select id="edit-hp">${['Healthy','Bruised','Hurt','Critical'].map(v=>`<option ${m.hp===v?'selected':''}>${v}</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <label>Magic Grounding</label>
+        <div class="charge-btns">
+          ${['water','stone','wet','none'].map(v=>`<button class="${m.grounding===v?'active':''}" onclick="event.stopPropagation(); setEditGrounding('${v}')">${v==='none'?'Ungrounded':v}</button>`).join('')}
+        </div>
+      </div>
+      <div class="field">
+        <label>Quest</label>
+        <textarea id="edit-quest" rows="3">${escHtml(m.quest)}</textarea>
+      </div>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" onclick="saveEdit()">Save</button>
+      </div>
+    </div>
+  </div>`;
+}
+function setEditGrounding(v){ state.modal.grounding = v; render(); }
+function saveEdit(){
+  state.character.hp = document.getElementById('edit-hp').value;
+  state.character.magicCharge = state.modal.grounding;
+  state.character.quest = document.getElementById('edit-quest').value;
+  state.modal = null;
+  render();
+}
+
+// ---- Menu (kept for status export access if needed elsewhere) ----
+
+// ============================================================
+// REFERENCE TABS — Bestiary & Spells (Open5e, free/no-key), Inventory, Status
+// ============================================================
+const OPEN5E_BASE = 'https://api.open5e.com';
+async function open5e(path){
+  const res = await fetch(OPEN5E_BASE + path);
+  const data = await res.json();
+  if(!res.ok) throw new Error(data && data.detail ? data.detail : ('HTTP '+res.status));
+  return data;
+}
+const CREATURE_TYPES = ['aberration','beast','celestial','construct','dragon','elemental','fey','fiend','giant','humanoid','monstrosity','ooze','plant','undead'];
+
+function renderBestiaryTab(){
+  const b = state.bestiary;
+  return `
+    <h2>${glyph('tab-icon-inline')} Bestiary</h2>
+    <div class="ref-row">
+      <div class="field-mini"><select id="bestiary-type" onchange="state.bestiary.type=this.value">${CREATURE_TYPES.map(t=>`<option ${b.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      <button class="pill-btn" onclick="fetchBestiary()">Look Up</button>
+    </div>
+    ${b.status ? `<div class="msg-note">${escHtml(b.status)}</div>` : ''}
+    ${b.results.map(c=>`
+      <div class="ref-card">
+        ${c.img_main ? `<img src="${c.img_main}" alt="${escAttr(c.name)}">` : ''}
+        <div class="rc-name">${escHtml(c.name||'Unknown')}</div>
+        <div class="rc-meta">${escHtml(c.size||'')} ${escHtml(c.type||'')} ${c.challenge_rating?'· CR '+escHtml(c.challenge_rating):''} ${c.hit_points?'· HP '+c.hit_points:''}</div>
+      </div>`).join('') || (b.status ? '' : '<div class="msg-note">No creatures pulled yet — pick a type and look up.</div>')}
+  `;
+}
+async function fetchBestiary(){
+  const type = state.bestiary.type;
+  state.bestiary.status = 'Scanning ' + type + ' records…';
+  render();
+  try{
+    const data = await open5e(`/v1/monsters/?type=${encodeURIComponent(type)}&limit=20`);
+    state.bestiary.results = data.results || [];
+    state.bestiary.status = state.bestiary.results.length ? '' : 'No records found.';
+  }catch(err){
+    state.bestiary.status = 'Lookup failed: ' + err.message;
+  }
+  render();
+}
+
+function renderSpellsTab(){
+  const s = state.spells;
+  return `
+    <h2>${glyph('tab-icon-inline')} Spell Archive</h2>
+    <div class="ref-row">
+      <div class="field-mini"><select id="spell-level" onchange="state.spells.level=parseInt(this.value,10)">${[0,1,2,3,4,5,6,7,8,9].map(l=>`<option value="${l}" ${s.level===l?'selected':''}>${l===0?'Cantrip':'Level '+l}</option>`).join('')}</select></div>
+      <button class="pill-btn" onclick="fetchSpellsTab()">Browse</button>
+    </div>
+    ${s.status ? `<div class="msg-note">${escHtml(s.status)}</div>` : ''}
+    ${s.results.map(sp=>`
+      <div class="ref-card">
+        <div class="rc-name">${escHtml(sp.name||'Unnamed spell')}</div>
+        <div class="rc-meta">${escHtml(sp.school||'')} ${sp.level_int!==undefined?'· level '+sp.level_int:''}</div>
+      </div>`).join('') || (s.status ? '' : '<div class="msg-note">No spells pulled yet — pick a level and browse.</div>')}
+  `;
+}
+async function fetchSpellsTab(){
+  const level = state.spells.level;
+  state.spells.status = 'Pulling spell records…';
+  render();
+  try{
+    let data = await open5e(`/v1/spells/?level_int=${level}&limit=30`);
+    let results = data.results || [];
+    if(!results.length){
+      const broad = await open5e(`/v1/spells/?limit=100`);
+      results = (broad.results||[]).filter(sp=>sp.level_int===level);
+    }
+    state.spells.results = results;
+    state.spells.status = results.length ? '' : 'No spells found for that level.';
+  }catch(err){
+    state.spells.status = 'Lookup failed: ' + err.message;
+  }
+  render();
+}
+
+function renderInventoryTab(){
+  const inv = state.character.inventory;
+  return `
+    <h2>${glyph('tab-icon-inline')} Inventory</h2>
+    <ul class="inv-list">
+      ${inv.map((item,i)=>`<li style="display:flex; justify-content:space-between; align-items:center;">${escHtml(item)}<button class="inv-remove" onclick="removeInvItem(${i})">remove</button></li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
+    </ul>
+    <div class="ref-row" style="margin-top:14px;">
+      <input type="text" id="new-inv-item" placeholder="Add item…" style="flex:1; min-width:150px; background:var(--bg); border:1px solid var(--line); color:var(--cream); padding:9px 10px; font-family:var(--mono); font-size:13px; border-radius:2px;">
+      <button class="pill-btn" onclick="addInvItem()">Add</button>
+    </div>
+  `;
+}
+function removeInvItem(i){ state.character.inventory.splice(i,1); render(); }
+function addInvItem(){
+  const el = document.getElementById('new-inv-item');
+  if(el.value.trim()){ state.character.inventory.push(el.value.trim()); el.value=''; render(); }
+}
+
+function renderStatusTab(){
+  const c = state.character;
+  return `
+    <h2>${glyph('tab-icon-inline')} Character</h2>
+    <div class="status-field">
+      <div style="font-family:var(--mono); font-size:15px; color:var(--brass);">${escHtml(c.name)}</div>
+      <div style="font-family:var(--mono); font-size:12px; color:var(--cream-dim);">${escHtml(c.species)} · ${escHtml(c.klass)}</div>
+    </div>
+    <div class="status-field">
+      <label>HP</label>
+      <select onchange="state.character.hp=this.value; render();">${['Healthy','Bruised','Hurt','Critical'].map(v=>`<option ${c.hp===v?'selected':''}>${v}</option>`).join('')}</select>
+    </div>
+    <div class="status-field">
+      <label>Magic Grounding</label>
+      <div class="charge-btns">${['water','stone','wet','none'].map(v=>`<button class="${c.magicCharge===v?'active':''}" onclick="state.character.magicCharge='${v}'; render();">${v==='none'?'Ungrounded':v}</button>`).join('')}</div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">Modifier: ${magicMod()>=0?'+':''}${magicMod()} to rolls right now.</div>
+    </div>
+    <div class="status-field">
+      <label>Quest</label>
+      <textarea rows="3" onchange="state.character.quest=this.value">${escHtml(c.quest)}</textarea>
+    </div>
+    <div class="subhead">Save-Worthy Moments</div>
+    ${state.saveWorthy.length ? state.saveWorthy.map(s=>`<div class="msg-note" style="text-align:left;">📝 ${escHtml(s)}</div>`).join('') : '<div class="flavor">None yet.</div>'}
+    <div class="ref-row" style="margin-top:18px;">
+      <button class="pill-btn" onclick="exportLog()">📝 Export Session Log</button>
+    </div>
+  `;
+}
+
+// ============================================================
+// DM API CALL
+// ============================================================
+const DM_SYSTEM_PROMPT = `You are the DM for a solo D&D-style campaign called Veyrune — old magic and crashed spaceship tech mashed together. Tone: funny, lighthearted, fantasy-meets-sci-fi. Companions: Bex (sarcastic rogue-mechanic) and Thrum (deadpan warrior-monk). The player's magic is fueled by water/earth grounding, given to you in current_state.
+Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
+When the player finds a notable item, set item_found instead of just mentioning it in prose.
+Whenever a choice is meaningful, offer exactly 3 response_options representing distinct approaches (e.g. cautious / aggressive / clever) — the player can always type their own action instead, so options are a convenience, not a constraint. Only return fewer than 3 (including zero) when no real choice applies, such as mid-resolution beats.
+Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
+
+const DM_TOOL_SCHEMA = {
+  name:"dm_response",
+  description:"Structured DM response for the Veyrune solo campaign.",
+  input_schema:{
+    type:"object",
+    properties:{
+      narration:{type:"string"},
+      companions:{ type:"array", items:{ type:"object", properties:{ name:{type:"string",enum:["Bex","Thrum"]}, line:{type:"string"} }, required:["name","line"] } },
+      character_status:{ type:"object", properties:{ hp:{type:"string",enum:["Healthy","Bruised","Hurt","Critical"]} }, required:["hp"] },
+      quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
+      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp"] },
+      requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"} } },
+      item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
+      response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
+      save_worthy:{ type:"array", items:{type:"string"} }
+    },
+    required:["narration","companions","character_status","quest","combat","requires_roll","item_found","response_options","save_worthy"]
+  }
+};
+
+function buildStateSnapshot(){
+  const c = state.character;
+  return {
+    hp:c.hp, magic_grounding:c.magicCharge, quest:c.quest,
+    combat: { active:state.combat.active, enemy_name:state.combat.creatureName||null, enemy_hp:state.combat.active?state.combat.creatureHp:null, enemy_max_hp:state.combat.active?state.combat.creatureMaxHp:null }
+  };
+}
+function chatToApiHistory(){
+  // collapse our chat log into a compact user/assistant turn history for context
+  const turns = [];
+  state.chat.forEach(m=>{
+    if(m.type==='player') turns.push({ role:'user', content:[{type:'text', text:m.text}] });
+    else if(m.type==='dm') turns.push({ role:'assistant', content:[{type:'text', text:m.text}] });
+  });
+  return turns;
+}
+function submitFreeform(){
+  const el = document.getElementById('composer-input');
+  if(el && el.value.trim()){ sendAction(el.value.trim()); el.value=''; }
+}
+async function sendAction(actionText, isRetry, resolution){
+  state.chat.push({ type:'player', text: actionText });
+  state.lastOptions = [];
+  state.loading = true;
+  render();
+
+  const payload = { player_action:actionText, current_state:buildStateSnapshot(), resolution: resolution||null };
+  try{
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({
+        model:"claude-sonnet-4-6",
+        max_tokens:1000,
+        system: DM_SYSTEM_PROMPT,
+        tools:[DM_TOOL_SCHEMA],
+        tool_choice:{ type:"tool", name:"dm_response" },
+        messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
+      })
+    });
+    const data = await res.json();
+    const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
+    if(!toolUse) throw new Error('No structured response returned.');
+    applyDMResponse(toolUse.input);
+  }catch(err){
+    state.chat.push({ type:'note', text:`⚠️ DM connection failed: ${err.message}` });
+  }
+  state.loading = false;
+  render();
+}
+function applyDMResponse(d){
+  state.chat.push({ type:'dm', text:d.narration, companions:d.companions||[] });
+  if(d.character_status && d.character_status.hp) state.character.hp = d.character_status.hp;
+  if(d.quest && d.quest.current) state.character.quest = d.quest.current;
+  if(d.combat){
+    if(d.combat.active){
+      state.combat = { active:true, creatureName:d.combat.enemy_name||'Unknown Foe', creatureHp:d.combat.enemy_hp??10, creatureMaxHp:d.combat.enemy_max_hp??10 };
+    } else if(state.combat.active){
+      state.combat.active = false;
+    }
+  }
+  (d.save_worthy||[]).forEach(s=>state.saveWorthy.push(s));
+  state.lastOptions = d.response_options || [];
+
+  if(d.item_found){
+    state.modal = { kind:'item', item:d.item_found };
+  } else if(d.requires_roll){
+    state.modal = { kind:'dice', requirement:d.requires_roll, chosenDie:d.requires_roll.die, result:null };
+  }
+}
+
+// ============================================================
+// SESSION LOG EXPORT
+// ============================================================
+function exportLog(){
+  const c = state.character;
+  const transcript = state.chat.map(m=>{
+    if(m.type==='dm') return `**DM:** ${m.text}` + (m.companions||[]).map(cc=>`\n> **${cc.name}:** ${cc.line}`).join('');
+    if(m.type==='player') return `**You:** ${m.text}`;
+    if(m.type==='roll') return `_${m.text}_`;
+    if(m.type==='note') return `_${m.text}_`;
+    return '';
+  }).join('\n\n');
+  const md = `# Session Log (auto-export)
+
+## Character Snapshot
+- Name: ${c.name} (${c.species} ${c.klass})
+- HP: ${c.hp}
+- Magic Grounding: ${magicLabel()}
+- Quest: ${c.quest}
+- Inventory: ${c.inventory.join(', ')}
+
+## Save-Worthy Moments
+${state.saveWorthy.map(s=>'- '+s).join('\n') || '- (none yet)'}
+
+## Transcript
+${transcript}
+`;
+  const blob = new Blob([md], {type:'text/markdown'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'session_log.md'; a.click();
+  URL.revokeObjectURL(url);
+  closeModal();
+}
+
+// ============================================================
+// BACKGROUND — self-contained SVG star-chart + glyph watermark
+// (no external fetch — guaranteed to render, no load-failure risk)
+// ============================================================
+function buildBackgroundSVG(){
+  const w = 900, h = 1600;
+  let rings = '';
+  for(let i=0;i<5;i++){
+    const cx = 150 + Math.random()*600, cy = 200 + Math.random()*1200, r = 60 + Math.random()*160;
+    rings += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#C9704A" stroke-width="1" opacity="0.12"/>`;
+  }
+  let stars = '';
+  for(let i=0;i<60;i++){
+    const x = Math.random()*w, y = Math.random()*h, r = Math.random()*1.4 + 0.3;
+    stars += `<circle cx="${x}" cy="${y}" r="${r}" fill="#E8DCC4" opacity="${(0.15+Math.random()*0.35).toFixed(2)}"/>`;
+  }
+  let lines = '';
+  for(let i=0;i<8;i++){
+    const y = (h/8)*i + 40;
+    lines += `<line x1="0" y1="${y}" x2="${w}" y2="${y+30}" stroke="#4FB3A9" stroke-width="0.5" opacity="0.06"/>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid slice">
+    <rect width="${w}" height="${h}" fill="#0C1A19"/>
+    ${lines}
+    ${rings}
+    ${stars}
+    <g transform="translate(450 800) scale(5.2)" opacity="0.05">
+      <circle cx="-15" cy="-5" r="22" fill="none" stroke="#C9704A" stroke-width="2"/>
+      <circle cx="15" cy="-5" r="22" fill="none" stroke="#C9704A" stroke-width="2"/>
+      <circle cx="0" cy="18" r="22" fill="none" stroke="#C9704A" stroke-width="2"/>
+      <path d="M-40 40 L-15 15 L-5 33 L10 10 L40 40" fill="none" stroke="#C9704A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </svg>`;
+}
+function applySvgFallbackBackground(){
+  const svg = buildBackgroundSVG();
+  const uri = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
+  const bg = document.getElementById('map-bg');
+  bg.style.backgroundImage = `url("${uri}")`;
+  bg.style.filter = 'none'; // SVG is already toned for the theme, no extra sepia needed
+  requestAnimationFrame(()=>bg.classList.add('loaded'));
+}
+
+const MAP_QUERIES = ['antique nautical chart parchment','old world map engraving','antique map torn edges','historical sea chart parchment'];
+async function loadMapBackground(){
+  try{
+    const query = MAP_QUERIES[Math.floor(Math.random()*MAP_QUERIES.length)];
+    const url = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search'
+      + '&gsrsearch=' + encodeURIComponent(query) + '&gsrnamespace=6&gsrlimit=12'
+      + '&prop=imageinfo&iiprop=url%7Cmime&iiurlwidth=1600&format=json&origin=*';
+    const controller = new AbortController();
+    const timeout = setTimeout(()=>controller.abort(), 5000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    const data = await res.json();
+    const pages = data.query && data.query.pages ? Object.values(data.query.pages) : [];
+    const candidates = pages.map(p=>p.imageinfo && p.imageinfo[0]).filter(i=>i && i.mime && i.mime.indexOf('image/')===0 && i.mime.indexOf('svg')===-1);
+    if(!candidates.length) throw new Error('no usable results');
+    const pick = candidates[Math.floor(Math.random()*candidates.length)];
+    const imgUrl = pick.thumburl || pick.url;
+    await new Promise((resolve, reject) => {
+      const preload = new Image();
+      preload.onload = resolve;
+      preload.onerror = reject;
+      preload.src = imgUrl;
+    });
+    const bg = document.getElementById('map-bg');
+    bg.style.backgroundImage = `url("${imgUrl}")`;
+    requestAnimationFrame(()=>bg.classList.add('loaded'));
+  }catch(err){
+    console.warn('Live map fetch unavailable, using glyph watermark fallback:', err.message);
+    applySvgFallbackBackground();
+  }
+}
+loadMapBackground();
+
+render();
+</script>
+</body>
+</html>
