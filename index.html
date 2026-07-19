@@ -1144,15 +1144,13 @@ function chatToApiHistory(){
     if(m.type==='player' || m.type==='player-ooc') turns.push({ role:'user', content:[{type:'text', text:m.text}] });
     else if(m.type==='dm') turns.push({ role:'assistant', content:[{type:'text', text:m.text}] });
   });
-  const capped = turns.slice(-16);
-  // Cache breakpoint on the last historical turn: consecutive calls share almost this
-  // entire prefix (only the newest 1-2 exchanges differ), so this reuses a cached prefix
-  // instead of rebilling the whole capped history at full price every turn.
-  if(capped.length){
-    const last = capped[capped.length - 1];
-    last.content[last.content.length - 1].cache_control = { type: "ephemeral" };
-  }
-  return capped;
+  return turns.slice(-16);
+  // Note: no cache_control breakpoint here. A message-level breakpoint would need the
+  // entire prefix before it — including the dynamic system block (character sheet, world
+  // bible, quest, etc.) — to match a previous call byte-for-byte. That block changes on
+  // almost every turn, so the breakpoint would just pay a cache-write cost with no
+  // realistic chance of ever being reused. The tool schema and static instructions still
+  // cache independently, since their own prefixes don't depend on this dynamic content.
 }
 
 // ---- OOC handling: matches trigger words from the DM instructions, handled entirely
@@ -1253,6 +1251,7 @@ async function sendAction(actionText, meta){
     override_invalid: !!meta.overrideInvalid
   };
   try{
+    const startedAt = performance.now();
     const data = await callDMApi({
       model: state.settings.fastMode ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-6",
       max_tokens:800,
@@ -1264,8 +1263,16 @@ async function sendAction(actionText, meta){
       tool_choice:{ type:"tool", name:"dm_response" },
       messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
     });
+    const elapsedMs = Math.round(performance.now() - startedAt);
     const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
     if(!toolUse) throw new Error('No structured response returned.');
+    const usage = data.usage || {};
+    logDebugEntry({
+      context: 'DM call timing',
+      action: actionText,
+      message: `${elapsedMs}ms · in:${usage.input_tokens||'?'} out:${usage.output_tokens||'?'} cache_read:${usage.cache_read_input_tokens||0} cache_write:${usage.cache_creation_input_tokens||0}`,
+      attempts: null
+    });
     await applyDMResponse(toolUse.input, meta, actionText);
   }catch(err){
     logDebugEntry({
