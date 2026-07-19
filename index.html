@@ -274,7 +274,9 @@ function createDefaultState(){
     settings: {
       permadeath: false,
       difficulty: 'medium', // 'easy' | 'medium' | 'hard' | 'deadly'
+      fastMode: false, // true = Haiku (faster, simpler prose), false = Sonnet (slower, sharper writing)
     },
+    debugLog: [],
     filesLoaded: false,
   };
 }
@@ -637,6 +639,7 @@ function renderModal(){
   if(m.kind==='reset-confirm') return renderResetConfirmModal();
   if(m.kind==='message-menu') return renderMessageMenuModal(m);
   if(m.kind==='spell-info') return renderSpellInfoModal(m);
+  if(m.kind==='debug-log') return renderDebugLogModal();
   return '';
 }
 function renderResetConfirmModal(){
@@ -813,6 +816,7 @@ async function fetchBestiary(){
     state.bestiary.status = matches.length ? '' : 'No records found in this sample — try again, or try a more common type.';
   }catch(err){
     state.bestiary.status = 'Lookup failed: ' + err.message;
+    logDebugEntry({ context:'Bestiary lookup', action: state.bestiary.type, message: err.message, attempts: null });
   }
   render();
 }
@@ -857,6 +861,7 @@ async function fetchSpellsTab(){
     state.spells.status = results.length ? '' : 'No spells found for that level.';
   }catch(err){
     state.spells.status = 'Lookup failed: ' + err.message;
+    logDebugEntry({ context:'Spell lookup', action: 'level '+state.spells.level, message: err.message, attempts: null });
   }
   render();
 }
@@ -978,23 +983,79 @@ function renderStatusTab(){
       </div>
       <div class="flavor" style="margin-top:6px; font-size:12px;">Guides how tough fights the DM introduces should be by default.</div>
     </div>
+    <div class="status-field">
+      <label>Response Speed</label>
+      <div class="charge-btns">
+        <button class="${!state.settings.fastMode?'active':''}" onclick="setFastMode(false)">Sharper</button>
+        <button class="${state.settings.fastMode?'active':''}" onclick="setFastMode(true)">Faster</button>
+      </div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">${state.settings.fastMode ? 'Haiku — quicker replies, simpler prose.' : 'Sonnet — slower, sharper writing and judgment.'}</div>
+    </div>
+    <div class="subhead">Debug</div>
+    <button class="pill-btn" onclick="openDebugLog()">🐞 Debug Log ${state.debugLog.length ? `(${state.debugLog.length})` : ''}</button>
     <div class="subhead" style="color:var(--danger);">Danger Zone</div>
     <button class="pill-btn" style="background:transparent; border-color:var(--danger); color:var(--danger);" onclick="openResetConfirm()">🗑️ Reset Campaign</button>
   `;
 }
 function setPermadeath(val){ state.settings.permadeath = val; persistSettings(); render(); }
 function setDifficulty(val){ state.settings.difficulty = val; persistSettings(); render(); }
+function setFastMode(val){ state.settings.fastMode = val; persistSettings(); render(); }
+function openDebugLog(){ state.modal = { kind:'debug-log' }; render(); }
+function renderDebugLogModal(){
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet" style="max-width:600px; max-height:80vh; overflow-y:auto;">
+      <h3>Debug Log</h3>
+      ${state.debugLog.length ? `
+        <div class="ref-row" style="margin-bottom:10px;">
+          <button class="pill-btn" onclick="clearDebugLog()">Clear Log</button>
+        </div>
+        ${state.debugLog.map(entry => `
+          <div class="ref-card">
+            <div class="rc-name" style="color:var(--danger);">${escHtml(entry.time)} — ${escHtml(entry.context||'Error')}</div>
+            ${entry.action ? `<div class="rc-meta">Action: "${escHtml(entry.action)}"</div>` : ''}
+            <div class="rc-meta" style="margin-top:4px;"><b style="color:var(--brass)">Message:</b> ${escHtml(entry.message||'')}</div>
+            ${(entry.attempts||[]).map(a => `
+              <div class="rc-meta" style="margin-top:6px; padding-left:10px; border-left:2px solid var(--line);">
+                <b style="color:var(--teal)">${escHtml(a.endpoint)}</b> — status: ${a.status===null?'none (network error)':a.status}<br>
+                ${escHtml(a.detail||'')}
+              </div>
+            `).join('')}
+          </div>
+        `).join('')}
+      ` : '<div class="flavor">No errors logged yet.</div>'}
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+    </div>
+  </div>`;
+}
+function clearDebugLog(){ state.debugLog = []; render(); }
 
 // ============================================================
 // DM API CALL
 // ============================================================
-function buildDMSystemPrompt(){
-  const wb = state.worldBible;
+// Static instructions never change turn-to-turn — cached via cache_control so Anthropic
+// bills this at a fraction of normal input-token price on every call after the first,
+// instead of reprocessing the same ~500 tokens of rules every single turn.
+function buildStaticInstructions(){
   return `You are the DM for a solo D&D-style campaign called Veyrune — old magic and crashed spaceship tech mashed together. Tone: funny, lighthearted, fantasy-meets-sci-fi. Companions: Bex (sarcastic rogue-mechanic) and Thrum (deadpan warrior-monk).
 
-These are the campaign's save files — read them first and treat them as source of truth. Never contradict them.
+These are the campaign's save files — read them first and treat them as source of truth. Never contradict them. They will be provided after this instructions block, in a separate message section, since they change between turns.
 
-CHARACTER SHEET:
+Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
+If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
+If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are/current_hook given in the save files. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
+Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
+When the player finds a notable item, set item_found instead of just mentioning it in prose.
+When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly.
+When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
+When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
+Always fill session_summary: where_we_are is a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose), and current_hook is the overarching quest framing (can repeat unchanged most turns). Always fill party_updates.bex_status and thrum_status with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.") — update it when their condition or mood actually changes, otherwise repeat the last one unchanged.
+Whenever a choice is meaningful, offer exactly 3 response_options representing distinct approaches (e.g. cautious / aggressive / clever) — the player can always type their own action instead, so options are a convenience, not a constraint. Only return fewer than 3 (including zero) when no real choice applies, such as mid-resolution beats.
+Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
+}
+// Dynamic per-turn state — small, changes often, sent uncached every call.
+function buildDynamicContext(){
+  const wb = state.worldBible;
+  return `CHARACTER SHEET:
 ${JSON.stringify(state.character)}
 
 WORLD BIBLE:
@@ -1017,19 +1078,7 @@ Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
 SETTINGS:
 Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
-Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.
-
-Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
-If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
-If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are/current_hook above. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
-Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
-When the player finds a notable item, set item_found instead of just mentioning it in prose.
-When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly.
-When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
-When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
-Always fill session_summary: where_we_are is a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose), and current_hook is the overarching quest framing (can repeat unchanged most turns). Always fill party_updates.bex_status and thrum_status with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.") — update it when their condition or mood actually changes, otherwise repeat the last one unchanged.
-Whenever a choice is meaningful, offer exactly 3 response_options representing distinct approaches (e.g. cautious / aggressive / clever) — the player can always type their own action instead, so options are a convenience, not a constraint. Only return fewer than 3 (including zero) when no real choice applies, such as mid-resolution beats.
-Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
+Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.`;
 }
 
 const DM_TOOL_SCHEMA = {
@@ -1074,7 +1123,8 @@ const DM_TOOL_SCHEMA = {
       save_worthy:{ type:"array", items:{type:"string"} }
     },
     required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","inventory_updates","action_validity","combat","requires_roll","item_found","response_options","save_worthy"]
-  }
+  },
+  cache_control: { type: "ephemeral" } // this schema never changes — cache it instead of rebilling the full nested JSON every turn
 };
 
 function buildStateSnapshot(){
@@ -1085,13 +1135,24 @@ function buildStateSnapshot(){
   };
 }
 function chatToApiHistory(){
-  // collapse our chat log into a compact user/assistant turn history for context
+  // Collapse our chat log into a compact user/assistant turn history for context.
+  // Capped to the last ~16 turns — long-term memory already lives in session_summary,
+  // quest, and open threads (sent fresh every call), so replaying the whole session's
+  // transcript isn't needed and just slows every response down as sessions get long.
   const turns = [];
   state.chat.forEach(m=>{
     if(m.type==='player' || m.type==='player-ooc') turns.push({ role:'user', content:[{type:'text', text:m.text}] });
     else if(m.type==='dm') turns.push({ role:'assistant', content:[{type:'text', text:m.text}] });
   });
-  return turns;
+  const capped = turns.slice(-16);
+  // Cache breakpoint on the last historical turn: consecutive calls share almost this
+  // entire prefix (only the newest 1-2 exchanges differ), so this reuses a cached prefix
+  // instead of rebilling the whole capped history at full price every turn.
+  if(capped.length){
+    const last = capped[capped.length - 1];
+    last.content[last.content.length - 1].cache_control = { type: "ephemeral" };
+  }
+  return capped;
 }
 
 // ---- OOC handling: matches trigger words from the DM instructions, handled entirely
@@ -1117,25 +1178,61 @@ function submitFreeform(){
   if(isOOCMessage(text)){ handleOOC(); return; }
   sendAction(text);
 }
+function logDebugEntry(entry){
+  state.debugLog.unshift({ time: new Date().toLocaleTimeString(), ...entry });
+  if(state.debugLog.length > 50) state.debugLog.length = 50;
+}
 async function callDMApi(body){
   // /api/dm is the Vercel serverless proxy (keeps your API key server-side).
   // If it's not present — e.g. previewing this file inside Claude.ai's artifact panel —
   // fall back to calling Anthropic directly, which that environment authenticates for you.
+  // Every attempt is logged with real status/body detail so failures are debuggable,
+  // instead of collapsing into a generic "Load failed" message.
+  const attempts = [];
   try{
     const res = await fetch("/api/dm", {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
       body: JSON.stringify(body)
     });
-    if(res.status === 404) throw new Error('no proxy route');
+    if(res.status === 404){
+      attempts.push({ endpoint:'/api/dm', status:404, detail:'no proxy route present (expected when previewing outside Vercel)' });
+      throw new Error('no proxy route');
+    }
+    if(!res.ok){
+      let bodyText = ''; try{ bodyText = (await res.text()).slice(0,400); }catch(e){}
+      attempts.push({ endpoint:'/api/dm', status:res.status, detail:bodyText || res.statusText });
+      const err = new Error(`/api/dm returned HTTP ${res.status}`);
+      err.debugAttempts = attempts;
+      throw err;
+    }
+    attempts.push({ endpoint:'/api/dm', status:res.status, detail:'ok' });
     return await res.json();
-  }catch(e){
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify(body)
-    });
-    return await res.json();
+  }catch(e1){
+    if(!attempts.length) attempts.push({ endpoint:'/api/dm', status:null, detail: e1.message || 'network error (fetch threw before a response)' });
+    try{
+      const res2 = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify(body)
+      });
+      if(!res2.ok){
+        let bodyText2 = ''; try{ bodyText2 = (await res2.text()).slice(0,400); }catch(e){}
+        attempts.push({ endpoint:'api.anthropic.com (direct)', status:res2.status, detail:bodyText2 || res2.statusText });
+        const err = new Error(`Direct Anthropic call returned HTTP ${res2.status}`);
+        err.debugAttempts = attempts;
+        throw err;
+      }
+      attempts.push({ endpoint:'api.anthropic.com (direct)', status:res2.status, detail:'ok' });
+      return await res2.json();
+    }catch(e2){
+      if(!attempts.some(a=>a.endpoint.includes('anthropic.com'))){
+        attempts.push({ endpoint:'api.anthropic.com (direct)', status:null, detail: e2.message || 'network error (fetch threw before a response)' });
+      }
+      const finalErr = new Error('Both DM endpoints failed — see debug log for details.');
+      finalErr.debugAttempts = attempts;
+      throw finalErr;
+    }
   }
 }
 async function sendAction(actionText, meta){
@@ -1157,9 +1254,12 @@ async function sendAction(actionText, meta){
   };
   try{
     const data = await callDMApi({
-      model:"claude-sonnet-4-6",
-      max_tokens:1000,
-      system: buildDMSystemPrompt(),
+      model: state.settings.fastMode ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-6",
+      max_tokens:800,
+      system: [
+        { type:"text", text: buildStaticInstructions(), cache_control:{ type:"ephemeral" } },
+        { type:"text", text: buildDynamicContext() }
+      ],
       tools:[DM_TOOL_SCHEMA],
       tool_choice:{ type:"tool", name:"dm_response" },
       messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
@@ -1168,7 +1268,13 @@ async function sendAction(actionText, meta){
     if(!toolUse) throw new Error('No structured response returned.');
     await applyDMResponse(toolUse.input, meta, actionText);
   }catch(err){
-    state.chat.push({ type:'note', text:`⚠️ DM connection failed: ${err.message}` });
+    logDebugEntry({
+      context: 'DM API call',
+      action: actionText,
+      message: err.message,
+      attempts: err.debugAttempts || null
+    });
+    state.chat.push({ type:'note', text:`⚠️ DM connection failed — check Status → Debug Log for details.` });
   }
   state.loading = false;
   render();
