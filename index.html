@@ -279,13 +279,15 @@ async function storageSet(key, value){
 }
 async function loadSaveFiles(){
   try{
-    const [char, wb, meta] = await Promise.all([
+    const [char, wb, party, meta] = await Promise.all([
       storageGet('veyrune:character_sheet'),
       storageGet('veyrune:world_bible'),
+      storageGet('veyrune:party'),
       storageGet('veyrune:session_log'),
     ]);
     if(char) Object.assign(state.character, JSON.parse(char));
     if(wb) Object.assign(state.worldBible, JSON.parse(wb));
+    if(party) Object.assign(state.party, JSON.parse(party));
     if(meta) Object.assign(state.sessionMeta, JSON.parse(meta));
   }catch(e){ console.warn('Could not load saved files, starting fresh:', e); }
   state.filesLoaded = true;
@@ -295,6 +297,7 @@ async function persistSaveFiles(){
   await Promise.all([
     storageSet('veyrune:character_sheet', JSON.stringify(state.character)),
     storageSet('veyrune:world_bible', JSON.stringify(state.worldBible)),
+    storageSet('veyrune:party', JSON.stringify(state.party)),
     storageSet('veyrune:session_log', JSON.stringify(state.sessionMeta)),
   ]);
 }
@@ -630,6 +633,15 @@ function renderStatusTab(){
       <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">Factions:</b> ${state.worldBible.factions.map(escHtml).join(' · ') || '(none yet)'}</div>
       <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">NPCs:</b> ${state.worldBible.npcs.map(escHtml).join(' · ') || '(none yet)'}</div>
     </div>
+    <div class="subhead">Party</div>
+    <div class="ref-card">
+      <div class="rc-name" style="margin-bottom:2px;">Bex</div>
+      <div class="rc-meta" style="white-space:pre-line;">${escHtml(state.party.bex)}</div>
+    </div>
+    <div class="ref-card">
+      <div class="rc-name" style="margin-bottom:2px;">Thrum</div>
+      <div class="rc-meta" style="white-space:pre-line;">${escHtml(state.party.thrum)}</div>
+    </div>
     <div class="subhead">Save-Worthy Moments</div>
     ${state.sessionMeta.recentEvents.length ? state.sessionMeta.recentEvents.map(s=>`<div class="msg-note" style="text-align:left;">📝 ${escHtml(s)}</div>`).join('') : '<div class="flavor">None yet.</div>'}
     <div class="subhead">Save Files</div>
@@ -674,6 +686,7 @@ Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
+When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Whenever a choice is meaningful, offer exactly 3 response_options representing distinct approaches (e.g. cautious / aggressive / clever) — the player can always type their own action instead, so options are a convenience, not a constraint. Only return fewer than 3 (including zero) when no real choice applies, such as mid-resolution beats.
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
 }
@@ -693,13 +706,17 @@ const DM_TOOL_SCHEMA = {
         new_factions:{type:"array",items:{type:"string"}},
         new_npcs:{type:"array",items:{type:"string"}}
       }, required:["new_locations","new_factions","new_npcs"] },
+      party_updates:{ type:"object", properties:{
+        bex_note:{type:["string","null"]},
+        thrum_note:{type:["string","null"]}
+      }, required:["bex_note","thrum_note"] },
       combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"} } },
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
     },
-    required:["narration","companions","character_status","quest","world_bible_updates","combat","requires_roll","item_found","response_options","save_worthy"]
+    required:["narration","companions","character_status","quest","world_bible_updates","party_updates","combat","requires_roll","item_found","response_options","save_worthy"]
   }
 };
 
@@ -810,6 +827,18 @@ async function applyDMResponse(d){
     (d.world_bible_updates.new_npcs||[]).forEach(n=>{ if(!wb.npcs.includes(n)){ wb.npcs.push(n); worldBibleChanged = true; } });
   }
 
+  let partyChanged = false;
+  if(d.party_updates){
+    if(d.party_updates.bex_note && !state.party.bex.includes(d.party_updates.bex_note)){
+      state.party.bex += `\n- ${d.party_updates.bex_note}`;
+      partyChanged = true;
+    }
+    if(d.party_updates.thrum_note && !state.party.thrum.includes(d.party_updates.thrum_note)){
+      state.party.thrum += `\n- ${d.party_updates.thrum_note}`;
+      partyChanged = true;
+    }
+  }
+
   if(d.item_found){
     state.modal = { kind:'item', item:d.item_found };
   } else if(d.requires_roll){
@@ -817,8 +846,12 @@ async function applyDMResponse(d){
   }
 
   await persistSaveFiles();
-  if(worldBibleChanged || (d.save_worthy||[]).length){
-    state.chat.push({ type:'note', text:'💾 Auto-saved — world bible / session log updated.' });
+  if(worldBibleChanged || partyChanged || (d.save_worthy||[]).length){
+    const parts = [];
+    if(worldBibleChanged) parts.push('world bible');
+    if(partyChanged) parts.push('party');
+    if((d.save_worthy||[]).length) parts.push('session log');
+    state.chat.push({ type:'note', text:`💾 Auto-saved — ${parts.join(', ')} updated.` });
   }
 }
 
