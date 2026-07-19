@@ -615,6 +615,27 @@ function submitFreeform(){
   const el = document.getElementById('composer-input');
   if(el && el.value.trim()){ sendAction(el.value.trim()); el.value=''; }
 }
+async function callDMApi(body){
+  // /api/dm is the Vercel serverless proxy (keeps your API key server-side).
+  // If it's not present — e.g. previewing this file inside Claude.ai's artifact panel —
+  // fall back to calling Anthropic directly, which that environment authenticates for you.
+  try{
+    const res = await fetch("/api/dm", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(body)
+    });
+    if(res.status === 404) throw new Error('no proxy route');
+    return await res.json();
+  }catch(e){
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(body)
+    });
+    return await res.json();
+  }
+}
 async function sendAction(actionText, isRetry, resolution){
   state.chat.push({ type:'player', text: actionText });
   state.lastOptions = [];
@@ -623,19 +644,14 @@ async function sendAction(actionText, isRetry, resolution){
 
   const payload = { player_action:actionText, current_state:buildStateSnapshot(), resolution: resolution||null };
   try{
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({
-        model:"claude-sonnet-4-6",
-        max_tokens:1000,
-        system: DM_SYSTEM_PROMPT,
-        tools:[DM_TOOL_SCHEMA],
-        tool_choice:{ type:"tool", name:"dm_response" },
-        messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
-      })
+    const data = await callDMApi({
+      model:"claude-sonnet-4-6",
+      max_tokens:1000,
+      system: DM_SYSTEM_PROMPT,
+      tools:[DM_TOOL_SCHEMA],
+      tool_choice:{ type:"tool", name:"dm_response" },
+      messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
     });
-    const data = await res.json();
     const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
     if(!toolUse) throw new Error('No structured response returned.');
     applyDMResponse(toolUse.input);
