@@ -104,6 +104,13 @@
     border:1px dashed var(--violet); padding:10px 12px; margin-top:10px; line-height:1.8;
   }
   .msg-ooc .speaker-tag{ color:var(--violet); opacity:0.9; display:block; margin-bottom:4px; }
+  .msg-invalid{
+    font-family:var(--mono); font-size:12px; color:#e08d7e; background:rgba(184,80,63,0.1);
+    border:1px dashed var(--danger); padding:10px 12px; margin-top:10px; line-height:1.7;
+  }
+  .msg-invalid .speaker-tag{ color:var(--danger); opacity:0.95; display:block; margin-bottom:4px; letter-spacing:1px; }
+  .override-hold{ user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; transition:filter .6s linear; }
+  .override-hold:active{ filter:brightness(0.7); }
   .msg-thinking{ font-family:var(--mono); font-size:11px; color:var(--teal); opacity:0.7; letter-spacing:1px; text-transform:uppercase; }
   .msg-thinking::after{ content:''; display:inline-block; width:6px; }
 
@@ -385,41 +392,42 @@ async function loadSettingsOnly(){
   }catch(e){ /* fine, defaults stand */ }
 }
 async function bootSaveFiles(){
-  let opener = null;
+  let resumeNote = null;
+  let hasSave = false;
   await loadSettingsOnly();
   try{
     const fromDisk = await loadSaveFilesFromDisk();
     if(fromDisk){
       startNewSessionBoundary();
       await persistSaveFiles();
-      opener = buildResumeOpener('💾 Loaded save files from ./saves — continuing where you left off.');
+      resumeNote = '💾 Loaded save files from ./saves — continuing where you left off.';
+      hasSave = true;
     } else {
       const fromStorage = await loadSaveFilesFromStorage();
       if(fromStorage){
         startNewSessionBoundary();
-        opener = buildResumeOpener('💾 Resumed from this device\'s saved progress.');
-      } else {
-        opener = {
-          type:'note-and-dm',
-          note: 'No saved progress found. If you have existing save files, go to Status → Import Save Files to load them before continuing.',
-          dm: "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted."
-        };
+        resumeNote = '💾 Resumed from this device\'s saved progress.';
+        hasSave = true;
       }
     }
   }catch(e){
     console.warn('Could not load saved files, starting fresh:', e);
-    opener = {
-      type:'note-and-dm',
-      note: '⚠️ Save files could not be loaded — starting fresh.',
-      dm: "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted."
-    };
   }
-  // Only now — after loading is fully resolved — does the chat get its first message.
-  state.chat.push({ type:'note', text: opener.note });
-  state.chat.push({ type:'dm', text: opener.dm, companions:[] });
   state.filesLoaded = true;
   state.booting = false;
-  render();
+
+  if(hasSave){
+    state.chat.push({ type:'note', text: resumeNote });
+    render();
+    // Real DM call instead of pasting static whereWeAre text — this gets you actual
+    // narration AND real response_options, so you land on something to tap immediately
+    // instead of a blank composer.
+    await sendAction('(resuming session)', { isResume:true, skipPlayerBubble:true });
+  } else {
+    state.chat.push({ type:'note', text: 'No saved progress found. If you have existing save files, go to Status → Import Save Files to load them before continuing.' });
+    state.chat.push({ type:'dm', text: "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] });
+    render();
+  }
 }
 function startNewSessionBoundary(){
   // A fresh app open is a new sitting at the table. The imported "Recent Events" describe
@@ -428,13 +436,6 @@ function startNewSessionBoundary(){
   // quest, character, world bible, and party all still persist across sessions as normal.
   state.sessionMeta.sessionNumber = (state.sessionMeta.sessionNumber || 1) + 1;
   state.sessionMeta.recentEvents = [];
-}
-function buildResumeOpener(noteText){
-  const meta = state.sessionMeta;
-  const recap = meta.whereWeAre
-    ? meta.whereWeAre
-    : "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.";
-  return { type:'resume', note: noteText, dm: recap };
 }
 async function persistSaveFiles(){
   await Promise.all([
@@ -524,6 +525,19 @@ function renderChatItem(m, i){
       <div>Inventory: ${m.inventory.length ? escHtml(m.inventory.join(', ')) : '(empty)'}</div>
     </div>`;
   }
+  if(m.type==='invalid-action'){
+    return `<div class="msg-invalid">
+      <div class="speaker-tag">[NOT POSSIBLE]</div>
+      <div>${escHtml(m.reason)}</div>
+      <div class="sheet-actions" style="margin-top:10px;">
+        <button class="btn-secondary" style="flex:none; padding:8px 14px;" onclick="dismissInvalidAction(${i})">Cancel</button>
+        <button class="btn-primary override-hold" style="flex:none; padding:8px 14px; background:var(--danger); border-color:var(--danger);"
+          onpointerdown="startOverrideHold(${i})" onpointerup="cancelOverrideHold()" onpointerleave="cancelOverrideHold()" onpointercancel="cancelOverrideHold()">
+          Hold to Override
+        </button>
+      </div>
+    </div>`;
+  }
   return '';
 }
 function longPressAttrs(idx){
@@ -536,6 +550,24 @@ function startLongPress(idx){
 }
 function cancelLongPress(){
   if(longPressTimer){ clearTimeout(longPressTimer); longPressTimer = null; }
+}
+let overrideHoldTimer = null;
+function startOverrideHold(idx){
+  cancelOverrideHold();
+  overrideHoldTimer = setTimeout(()=>{ confirmOverride(idx); }, 600);
+}
+function cancelOverrideHold(){
+  if(overrideHoldTimer){ clearTimeout(overrideHoldTimer); overrideHoldTimer = null; }
+}
+function dismissInvalidAction(idx){
+  state.chat.splice(idx, 1);
+  render();
+}
+function confirmOverride(idx){
+  const item = state.chat[idx];
+  if(!item || item.type !== 'invalid-action') return;
+  state.chat.splice(idx, 1);
+  sendAction(item.originalAction, { overrideInvalid:true });
 }
 function openMessageMenu(idx){
   const item = state.chat[idx];
@@ -604,6 +636,7 @@ function renderModal(){
   if(m.kind==='preview') return renderPreviewModal(m);
   if(m.kind==='reset-confirm') return renderResetConfirmModal();
   if(m.kind==='message-menu') return renderMessageMenuModal(m);
+  if(m.kind==='spell-info') return renderSpellInfoModal(m);
   return '';
 }
 function renderResetConfirmModal(){
@@ -660,7 +693,7 @@ function confirmRoll(){
   if(m.requirement){
     const resolution = { die:m.chosenDie, roll:m.result.roll, modifier:m.result.mod, total:m.result.total, reason:m.requirement.reason };
     state.modal = null;
-    sendAction(`(rolled for: ${m.requirement.reason})`, false, resolution);
+    sendAction(`(rolled for: ${m.requirement.reason})`, { resolution });
   } else {
     state.modal = null;
     render();
@@ -793,10 +826,10 @@ function renderSpellsTab(){
       <button class="pill-btn" onclick="fetchSpellsTab()">Browse</button>
     </div>
     ${s.status ? `<div class="msg-note">${escHtml(s.status)}</div>` : ''}
-    ${s.results.map(sp=>`
-      <div class="ref-card">
+    ${s.results.map((sp,i)=>`
+      <div class="ref-card" style="cursor:pointer;" onclick="openSpellInfo(${i})">
         <div class="rc-name">${escHtml(sp.name||'Unnamed spell')}</div>
-        <div class="rc-meta">${escHtml(sp.school||'')} ${sp.level_int!==undefined?'· level '+sp.level_int:''}</div>
+        <div class="rc-meta">${escHtml(sp.school||'')} ${sp.level_int!==undefined?'· level '+sp.level_int:''} · tap for details</div>
       </div>`).join('') || (s.status ? '' : '<div class="msg-note">No spells pulled yet — pick a level and browse.</div>')}
   `;
 }
@@ -811,12 +844,51 @@ async function fetchSpellsTab(){
       const broad = await open5e(`/v1/spells/?limit=100`);
       results = (broad.results||[]).filter(sp=>sp.level_int===level);
     }
+    // Open5e aggregates the same core spells from multiple source books (SRD 2014, SRD 2024,
+    // third-party reprints) — dedupe by name so the same spell doesn't show up twice.
+    const seen = new Set();
+    results = results.filter(sp=>{
+      const key = (sp.name||'').toLowerCase().trim();
+      if(seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     state.spells.results = results;
     state.spells.status = results.length ? '' : 'No spells found for that level.';
   }catch(err){
     state.spells.status = 'Lookup failed: ' + err.message;
   }
   render();
+}
+function openSpellInfo(i){
+  state.modal = { kind:'spell-info', spell: state.spells.results[i] };
+  render();
+}
+function renderSpellInfoModal(m){
+  const sp = m.spell;
+  if(!sp) return '';
+  const components = [];
+  if(sp.requires_verbal_components) components.push('Verbal');
+  if(sp.requires_somatic_components) components.push('Somatic');
+  if(sp.requires_material_components) components.push('Material' + (sp.material ? ` (${sp.material})` : ''));
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet" style="max-width:560px; max-height:85vh; overflow-y:auto;">
+      <h3>${escHtml(sp.name||'Unnamed Spell')}</h3>
+      <div class="flavor" style="margin-bottom:14px;">${escHtml(sp.school||'')}${sp.level_int!==undefined ? (sp.level_int===0 ? ' cantrip' : ' · level '+sp.level_int) : ''}${sp.ritual==='yes' ? ' · ritual' : ''}${sp.concentration==='yes' ? ' · concentration' : ''}</div>
+      <div class="rc-meta" style="line-height:1.9;">
+        <div><b style="color:var(--brass)">Casting Time:</b> ${escHtml(sp.casting_time||'—')}</div>
+        <div><b style="color:var(--brass)">Range:</b> ${escHtml(sp.range||'—')}</div>
+        <div><b style="color:var(--brass)">Components:</b> ${components.length ? escHtml(components.join(', ')) : '—'}</div>
+        <div><b style="color:var(--brass)">Duration:</b> ${escHtml(sp.duration||'—')}</div>
+        <div><b style="color:var(--brass)">Classes:</b> ${escHtml(sp.dnd_class||'—')}</div>
+      </div>
+      <div class="flavor" style="margin:6px 0 10px;">D&D 5e spells use spell slots by level, not a mana pool — "Level ${sp.level_int}" above is the slot cost.</div>
+      <div class="subhead" style="margin-top:10px;">Description</div>
+      <div class="rc-meta" style="white-space:pre-line; line-height:1.7;">${escHtml(sp.desc||'No description available.')}</div>
+      ${sp.higher_level ? `<div class="subhead">At Higher Levels</div><div class="rc-meta" style="white-space:pre-line; line-height:1.7;">${escHtml(sp.higher_level)}</div>` : ''}
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+    </div>
+  </div>`;
 }
 
 function renderInventoryTab(){
@@ -949,6 +1021,8 @@ Default encounter difficulty: ${state.settings.difficulty} — when you introduc
 
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
 If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
+If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are/current_hook above. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
+Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
@@ -989,13 +1063,17 @@ const DM_TOOL_SCHEMA = {
         drop:{type:"array",items:{type:"string"}},
         add:{type:"array",items:{type:"string"}}
       }, required:["equip","unequip","drop","add"] },
+      action_validity:{ type:"object", properties:{
+        valid:{type:"boolean"},
+        reason:{type:["string","null"]}
+      }, required:["valid","reason"] },
       combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"} } },
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
     },
-    required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","inventory_updates","combat","requires_roll","item_found","response_options","save_worthy"]
+    required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","inventory_updates","action_validity","combat","requires_roll","item_found","response_options","save_worthy"]
   }
 };
 
@@ -1035,7 +1113,7 @@ function submitFreeform(){
   if(!el || !el.value.trim()) return;
   const text = el.value.trim();
   el.value = '';
-  if(state.oocMode){ sendAction(text, null, true); return; }
+  if(state.oocMode){ sendAction(text, { isOOC:true }); return; }
   if(isOOCMessage(text)){ handleOOC(); return; }
   sendAction(text);
 }
@@ -1060,13 +1138,23 @@ async function callDMApi(body){
     return await res.json();
   }
 }
-async function sendAction(actionText, isOOCQuestion, resolution){
-  state.chat.push({ type: isOOCQuestion ? 'player-ooc' : 'player', text: actionText });
+async function sendAction(actionText, meta){
+  meta = meta || {};
+  if(!meta.skipPlayerBubble){
+    state.chat.push({ type: meta.isOOC ? 'player-ooc' : 'player', text: actionText });
+  }
   state.lastOptions = [];
   state.loading = true;
   render();
 
-  const payload = { player_action:actionText, current_state:buildStateSnapshot(), resolution: resolution||null, is_ooc: !!isOOCQuestion };
+  const payload = {
+    player_action: actionText,
+    current_state: buildStateSnapshot(),
+    resolution: meta.resolution || null,
+    is_ooc: !!meta.isOOC,
+    is_resume: !!meta.isResume,
+    override_invalid: !!meta.overrideInvalid
+  };
   try{
     const data = await callDMApi({
       model:"claude-sonnet-4-6",
@@ -1078,18 +1166,28 @@ async function sendAction(actionText, isOOCQuestion, resolution){
     });
     const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
     if(!toolUse) throw new Error('No structured response returned.');
-    await applyDMResponse(toolUse.input, !!isOOCQuestion);
+    await applyDMResponse(toolUse.input, meta, actionText);
   }catch(err){
     state.chat.push({ type:'note', text:`⚠️ DM connection failed: ${err.message}` });
   }
   state.loading = false;
   render();
 }
-async function applyDMResponse(d, isOOCQuestion){
-  state.chat.push({ type:'dm', text:d.narration, companions: isOOCQuestion ? [] : (d.companions||[]), isOOC: !!isOOCQuestion });
+async function applyDMResponse(d, meta, originalActionText){
+  meta = meta || {};
+
+  // Invalid-action check: the DM decided the described action isn't actually possible
+  // (no such power, item doesn't exist/can't be removed, etc). Skip this entirely if the
+  // player already chose to override — that retry is allowed to go through normally.
+  if(!meta.isOOC && d.action_validity && d.action_validity.valid === false && !meta.overrideInvalid){
+    state.chat.push({ type:'invalid-action', reason: d.action_validity.reason || "That doesn't seem possible right now.", originalAction: originalActionText });
+    return;
+  }
+
+  state.chat.push({ type:'dm', text:d.narration, companions: meta.isOOC ? [] : (d.companions||[]), isOOC: !!meta.isOOC });
   state.lastOptions = d.response_options || [];
 
-  if(isOOCQuestion){
+  if(meta.isOOC){
     // OOC questions get answered but never touch character/quest/combat/world/party state,
     // and don't count as a save-worthy moment — nothing about the scene actually happened.
     return;
