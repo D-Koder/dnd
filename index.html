@@ -240,7 +240,8 @@ function createDefaultState(){
       hp:'Healthy', magicCharge:'stone',
       quest:'The Hum Job — Port Halloway hull, Anchor-7',
       inventory:['Relic-scanning kit','Rusted key (in pedestal)','Dormant egg-object (unpaired)'],
-      equipped:['Modified focus-tool','Relic fragment (reactive)']
+      equipped:['Modified focus-tool','Relic fragment (reactive)'],
+      itemInfo: {} // itemName -> description, populated as items are found/added
     },
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
     chat: [],
@@ -640,6 +641,8 @@ function renderModal(){
   if(m.kind==='message-menu') return renderMessageMenuModal(m);
   if(m.kind==='spell-info') return renderSpellInfoModal(m);
   if(m.kind==='debug-log') return renderDebugLogModal();
+  if(m.kind==='items-gained') return renderItemsGainedModal(m);
+  if(m.kind==='item-info') return renderItemInfoModal(m);
   return '';
 }
 function renderResetConfirmModal(){
@@ -727,6 +730,22 @@ function resolveItem(keep){
   }
   state.modal = null;
   render();
+}
+
+// ---- Items gained (already added, just informational) ----
+function renderItemsGainedModal(m){
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>${m.items.length > 1 ? 'Items Gained' : 'Item Gained'}</h3>
+      ${m.items.map(it => `
+        <div class="ref-card">
+          <div class="rc-name">${escHtml(it.name)}</div>
+          <div class="rc-meta">${escHtml(it.desc || 'No description.')}</div>
+        </div>
+      `).join('')}
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Got it</button></div>
+    </div>
+  </div>`;
 }
 
 // ---- Edit character modal ----
@@ -903,13 +922,27 @@ function renderInventoryTab(){
     <div class="flavor" style="margin-bottom:12px;">Read-only — equip, unequip, drop, or pick up items by describing it to the DM in Chat.</div>
     <div class="subhead" style="margin-top:0;">Equipped</div>
     <ul class="inv-list">
-      ${c.equipped.map(item=>`<li>⚔️ ${escHtml(item)}</li>`).join('') || '<li class="flavor" style="border:none;">Nothing equipped.</li>'}
+      ${c.equipped.map(item=>`<li style="display:flex; justify-content:space-between; align-items:center;"><span>⚔️ ${escHtml(item)}</span><button class="inv-remove" style="color:var(--teal);" onclick='openItemInfo(${escAttr(JSON.stringify(item))})'>info</button></li>`).join('') || '<li class="flavor" style="border:none;">Nothing equipped.</li>'}
     </ul>
     <div class="subhead">Carried</div>
     <ul class="inv-list">
-      ${c.inventory.map(item=>`<li>${escHtml(item)}</li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
+      ${c.inventory.map(item=>`<li style="display:flex; justify-content:space-between; align-items:center;"><span>${escHtml(item)}</span><button class="inv-remove" style="color:var(--teal);" onclick='openItemInfo(${escAttr(JSON.stringify(item))})'>info</button></li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
     </ul>
   `;
+}
+function openItemInfo(name){
+  const desc = (state.character.itemInfo && state.character.itemInfo[name]) || null;
+  state.modal = { kind:'item-info', name, desc };
+  render();
+}
+function renderItemInfoModal(m){
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>${escHtml(m.name)}</h3>
+      <div class="rc-meta" style="line-height:1.7;">${escHtml(m.desc || 'No description recorded for this item yet.')}</div>
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+    </div>
+  </div>`;
 }
 
 function renderStatusTab(){
@@ -1042,14 +1075,14 @@ These are the campaign's save files — read them first and treat them as source
 
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
 If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
-If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are/current_hook given in the save files. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
+If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are and the current quest given in the save files. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
 Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
-When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly.
+When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
-Always fill session_summary: where_we_are is a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose), and current_hook is the overarching quest framing (can repeat unchanged most turns). Always fill party_updates.bex_status and thrum_status with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.") — update it when their condition or mood actually changes, otherwise repeat the last one unchanged.
-Whenever a choice is meaningful, offer exactly 3 response_options representing distinct approaches (e.g. cautious / aggressive / clever) — the player can always type their own action instead, so options are a convenience, not a constraint. Only return fewer than 3 (including zero) when no real choice applies, such as mid-resolution beats.
+Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
+response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
 }
 // Dynamic per-turn state — small, changes often, sent uncached every call.
@@ -1072,7 +1105,7 @@ Thrum — ${state.party.thrum}
 
 SESSION LOG:
 Where we are right now: ${state.sessionMeta.whereWeAre || '(session just starting)'}
-Current hook: ${state.sessionMeta.currentHook || state.character.quest}
+Current quest/hook: ${state.character.quest}
 Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none yet)'}
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
@@ -1092,9 +1125,8 @@ const DM_TOOL_SCHEMA = {
       character_status:{ type:"object", properties:{ hp:{type:"string",enum:["Healthy","Bruised","Hurt","Critical"]} }, required:["hp"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
-        where_we_are:{type:"string"},
-        current_hook:{type:"string"}
-      }, required:["where_we_are","current_hook"] },
+        where_we_are:{type:"string"}
+      }, required:["where_we_are"] },
       world_bible_updates:{ type:"object", properties:{
         new_locations:{type:"array",items:{type:"string"}},
         new_factions:{type:"array",items:{type:"string"}},
@@ -1110,7 +1142,7 @@ const DM_TOOL_SCHEMA = {
         equip:{type:"array",items:{type:"string"}},
         unequip:{type:"array",items:{type:"string"}},
         drop:{type:"array",items:{type:"string"}},
-        add:{type:"array",items:{type:"string"}}
+        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"} }, required:["name","desc"] }}
       }, required:["equip","unequip","drop","add"] },
       action_validity:{ type:"object", properties:{
         valid:{type:"boolean"},
@@ -1122,7 +1154,7 @@ const DM_TOOL_SCHEMA = {
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
     },
-    required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","inventory_updates","action_validity","combat","requires_roll","item_found","response_options","save_worthy"]
+    required:["narration","companions","character_status","quest","combat","response_options","save_worthy"]
   },
   cache_control: { type: "ephemeral" } // this schema never changes — cache it instead of rebilling the full nested JSON every turn
 };
@@ -1319,7 +1351,6 @@ async function applyDMResponse(d, meta, originalActionText){
   (d.quest && d.quest.new_threads || []).forEach(t=>state.sessionMeta.openThreads.push(t));
   if(d.session_summary){
     if(d.session_summary.where_we_are) state.sessionMeta.whereWeAre = d.session_summary.where_we_are;
-    if(d.session_summary.current_hook) state.sessionMeta.currentHook = d.session_summary.current_hook;
   }
 
   let worldBibleChanged = false;
@@ -1345,8 +1376,10 @@ async function applyDMResponse(d, meta, originalActionText){
   }
 
   let inventoryChanged = false;
+  let newlyGained = [];
   if(d.inventory_updates){
     const c = state.character;
+    if(!c.itemInfo) c.itemInfo = {};
     (d.inventory_updates.equip||[]).forEach(name=>{
       const idx = c.inventory.indexOf(name);
       if(idx>=0){ c.inventory.splice(idx,1); if(!c.equipped.includes(name)) c.equipped.push(name); inventoryChanged = true; }
@@ -1359,13 +1392,23 @@ async function applyDMResponse(d, meta, originalActionText){
       const ii = c.inventory.indexOf(name); if(ii>=0){ c.inventory.splice(ii,1); inventoryChanged = true; }
       const ei = c.equipped.indexOf(name); if(ei>=0){ c.equipped.splice(ei,1); inventoryChanged = true; }
     });
-    (d.inventory_updates.add||[]).forEach(name=>{
-      if(!c.inventory.includes(name) && !c.equipped.includes(name)){ c.inventory.push(name); inventoryChanged = true; }
+    (d.inventory_updates.add||[]).forEach(entry=>{
+      const name = entry.name, desc = entry.desc || '';
+      if(!c.inventory.includes(name) && !c.equipped.includes(name)){
+        c.inventory.push(name);
+        c.itemInfo[name] = desc;
+        newlyGained.push({ name, desc });
+        inventoryChanged = true;
+      }
     });
   }
 
   if(d.item_found){
+    if(!state.character.itemInfo) state.character.itemInfo = {};
+    state.character.itemInfo[d.item_found.name] = d.item_found.desc || '';
     state.modal = { kind:'item', item:d.item_found };
+  } else if(newlyGained.length){
+    state.modal = { kind:'items-gained', items:newlyGained };
   } else if(d.requires_roll){
     state.modal = { kind:'dice', requirement:d.requires_roll, chosenDie:d.requires_roll.die, result:null };
   }
