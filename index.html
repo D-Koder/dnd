@@ -85,6 +85,13 @@
     font-family:var(--mono); font-size:13px; color:var(--teal); margin-top:14px; padding-left:0;
   }
   .msg-player .speaker-tag{ color:var(--teal); }
+  .msg-player-ooc{
+    font-family:var(--mono); font-size:13px; color:var(--violet); margin-top:14px;
+  }
+  .msg-dm-ooc{
+    font-family:var(--mono); font-size:13px; color:var(--cream); margin-top:8px;
+    border-left:2px solid var(--violet); padding-left:10px; background:rgba(139,107,184,0.06);
+  }
   .msg-roll{
     font-family:var(--mono); font-size:11px; color:var(--brass); letter-spacing:0.5px;
     border-left:2px solid var(--brass); padding-left:10px; margin-top:6px;
@@ -128,6 +135,10 @@
   }
   .icon-btn:hover{ border-color:var(--teal); color:var(--teal); }
   .icon-btn.send{ background:var(--brass-dim); border-color:var(--brass); color:var(--cream); font-family:var(--mono); font-size:11px; letter-spacing:1.5px; width:auto; padding:0 14px; }
+  .icon-btn.ooc-toggle{ width:auto; padding:0 10px; font-family:var(--mono); font-size:10px; letter-spacing:1px; }
+  .icon-btn.ooc-toggle.active{ background:rgba(139,107,184,0.18); border-color:var(--violet); color:var(--violet); }
+  .composer.ooc-active{ border-top-color:var(--violet); background:rgba(139,107,184,0.06); }
+  .composer.ooc-active input[type=text]{ border-bottom-color:var(--violet); }
   .icon-btn.send:hover{ background:var(--brass); }
 
   /* ---- modal overlay ---- */
@@ -221,7 +232,8 @@ function createDefaultState(){
       name:'Raken', species:'Coralkin', klass:'Tech Mage Schemer',
       hp:'Healthy', magicCharge:'stone',
       quest:'The Hum Job — Port Halloway hull, Anchor-7',
-      inventory:['Modified focus-tool','Relic-scanning kit','Relic fragment (reactive)','Rusted key (in pedestal)','Dormant egg-object (unpaired)']
+      inventory:['Relic-scanning kit','Rusted key (in pedestal)','Dormant egg-object (unpaired)'],
+      equipped:['Modified focus-tool','Relic fragment (reactive)']
     },
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
     chat: [],
@@ -229,6 +241,7 @@ function createDefaultState(){
     lastOptions: [],
     loading: false,
     modal: null,
+    oocMode: false,
     tab: 'chat',
     bestiary: { type:'humanoid', results:[], status:'' },
     spells: { level:0, results:[], status:'' },
@@ -250,6 +263,10 @@ function createDefaultState(){
       recentEvents: [],
       openThreads: [],
       sessionNumber: 1,
+    },
+    settings: {
+      permadeath: false,
+      difficulty: 'medium', // 'easy' | 'medium' | 'hard' | 'deadly'
     },
     filesLoaded: false,
   };
@@ -361,8 +378,15 @@ async function loadSaveFilesFromStorage(){
   if(meta){ Object.assign(state.sessionMeta, JSON.parse(meta)); found = true; }
   return found;
 }
+async function loadSettingsOnly(){
+  try{
+    const settings = await storageGet('veyrune:settings');
+    if(settings) Object.assign(state.settings, JSON.parse(settings));
+  }catch(e){ /* fine, defaults stand */ }
+}
 async function bootSaveFiles(){
   let opener = null;
+  await loadSettingsOnly();
   try{
     const fromDisk = await loadSaveFilesFromDisk();
     if(fromDisk){
@@ -420,6 +444,9 @@ async function persistSaveFiles(){
     storageSet('veyrune:session_log', JSON.stringify(state.sessionMeta)),
   ]);
 }
+async function persistSettings(){
+  await storageSet('veyrune:settings', JSON.stringify(state.settings));
+}
 function magicLabel(){
   return {water:'Near Water', stone:'On Stone', wet:'Wet Earth', none:'Ungrounded'}[state.character.magicCharge];
 }
@@ -449,9 +476,10 @@ function render(){
       }</div>
       ${state.combat.active ? renderEnemyStrip() : ''}
       ${state.lastOptions.length && !state.loading ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
-      <div class="composer">
+      <div class="composer ${state.oocMode ? 'ooc-active' : ''}">
         <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting?'disabled':''}>⚄</button>
-        <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':'What do you do?'}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting?'disabled':''}>
+        <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting?'disabled':''}>OOC</button>
+        <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':(state.oocMode?'Ask the DM (OOC)…':'What do you do?')}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting?'disabled':''}>
         <button class="icon-btn send" title="Send" onclick="submitFreeform()" ${state.booting?'disabled':''}>SEND</button>
       </div>
     ` : `<div class="tab-panel">${renderTabPanel()}</div>`}
@@ -478,10 +506,14 @@ function renderTabPanel(){
 
 function renderChatItem(m, i){
   if(m.type==='dm'){
+    if(m.isOOC){
+      return `<div class="msg-dm-ooc"><span class="speaker-tag">[DM · OOC]</span>${escHtml(m.text)}</div>`;
+    }
     const divider = i>0 ? `<div class="turn-divider">${glyph()}<div class="line"></div></div>` : '';
     return `${divider}<div class="msg-dm"><span class="speaker-tag">[DM]</span>${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
   }
   if(m.type==='player') return `<div class="msg-player msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
+  if(m.type==='player-ooc') return `<div class="msg-player-ooc msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU · OOC]</span>${escHtml(m.text)}</div>`;
   if(m.type==='roll') return `<div class="msg-roll msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[ROLL]</span>${escHtml(m.text)}</div>`;
   if(m.type==='note') return `<div class="msg-note"><span class="speaker-tag">[NOTE]</span>${escHtml(m.text)}</div>`;
   if(m.type==='ooc'){
@@ -507,7 +539,7 @@ function cancelLongPress(){
 }
 function openMessageMenu(idx){
   const item = state.chat[idx];
-  if(!item || (item.type!=='player' && item.type!=='roll')) return;
+  if(!item || (item.type!=='player' && item.type!=='player-ooc' && item.type!=='roll')) return;
   state.modal = { kind:'message-menu', idx, editing:false, editText:item.text };
   render();
 }
@@ -788,22 +820,19 @@ async function fetchSpellsTab(){
 }
 
 function renderInventoryTab(){
-  const inv = state.character.inventory;
+  const c = state.character;
   return `
     <h2>${glyph('tab-icon-inline')} Inventory</h2>
+    <div class="flavor" style="margin-bottom:12px;">Read-only — equip, unequip, drop, or pick up items by describing it to the DM in Chat.</div>
+    <div class="subhead" style="margin-top:0;">Equipped</div>
     <ul class="inv-list">
-      ${inv.map((item,i)=>`<li style="display:flex; justify-content:space-between; align-items:center;">${escHtml(item)}<button class="inv-remove" onclick="removeInvItem(${i})">remove</button></li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
+      ${c.equipped.map(item=>`<li>⚔️ ${escHtml(item)}</li>`).join('') || '<li class="flavor" style="border:none;">Nothing equipped.</li>'}
     </ul>
-    <div class="ref-row" style="margin-top:14px;">
-      <input type="text" id="new-inv-item" placeholder="Add item…" style="flex:1; min-width:150px; background:var(--bg); border:1px solid var(--line); color:var(--cream); padding:9px 10px; font-family:var(--mono); font-size:13px; border-radius:2px;">
-      <button class="pill-btn" onclick="addInvItem()">Add</button>
-    </div>
+    <div class="subhead">Carried</div>
+    <ul class="inv-list">
+      ${c.inventory.map(item=>`<li>${escHtml(item)}</li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
+    </ul>
   `;
-}
-function removeInvItem(i){ state.character.inventory.splice(i,1); render(); }
-function addInvItem(){
-  const el = document.getElementById('new-inv-item');
-  if(el.value.trim()){ state.character.inventory.push(el.value.trim()); el.value=''; render(); }
 }
 
 function renderStatusTab(){
@@ -861,10 +890,28 @@ function renderStatusTab(){
       <button class="pill-btn" onclick="openFilePreview('party')">party.md</button>
       <button class="pill-btn" onclick="openFilePreview('session_log')">session_log.md</button>
     </div>
+    <div class="subhead">Settings</div>
+    <div class="status-field">
+      <label>Hardcore Mode (permadeath)</label>
+      <div class="charge-btns">
+        <button class="${!state.settings.permadeath?'active':''}" onclick="setPermadeath(false)">Off</button>
+        <button class="${state.settings.permadeath?'active':''}" onclick="setPermadeath(true)">On</button>
+      </div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">${state.settings.permadeath ? 'Death is real and permanent when it happens.' : 'Failure is a serious setback, not the end.'}</div>
+    </div>
+    <div class="status-field">
+      <label>Default Encounter Difficulty</label>
+      <div class="charge-btns">
+        ${['easy','medium','hard','deadly'].map(d=>`<button class="${state.settings.difficulty===d?'active':''}" onclick="setDifficulty('${d}')">${d}</button>`).join('')}
+      </div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">Guides how tough fights the DM introduces should be by default.</div>
+    </div>
     <div class="subhead" style="color:var(--danger);">Danger Zone</div>
     <button class="pill-btn" style="background:transparent; border-color:var(--danger); color:var(--danger);" onclick="openResetConfirm()">🗑️ Reset Campaign</button>
   `;
 }
+function setPermadeath(val){ state.settings.permadeath = val; persistSettings(); render(); }
+function setDifficulty(val){ state.settings.difficulty = val; persistSettings(); render(); }
 
 // ============================================================
 // DM API CALL
@@ -896,8 +943,14 @@ Current hook: ${state.sessionMeta.currentHook || state.character.quest}
 Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none yet)'}
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
+SETTINGS:
+Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
+Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.
+
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
+If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
+When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Always fill session_summary: where_we_are is a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose), and current_hook is the overarching quest framing (can repeat unchanged most turns). Always fill party_updates.bex_status and thrum_status with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.") — update it when their condition or mood actually changes, otherwise repeat the last one unchanged.
@@ -930,13 +983,19 @@ const DM_TOOL_SCHEMA = {
         bex_status:{type:["string","null"]},
         thrum_status:{type:["string","null"]}
       }, required:["bex_note","thrum_note","bex_status","thrum_status"] },
+      inventory_updates:{ type:"object", properties:{
+        equip:{type:"array",items:{type:"string"}},
+        unequip:{type:"array",items:{type:"string"}},
+        drop:{type:"array",items:{type:"string"}},
+        add:{type:"array",items:{type:"string"}}
+      }, required:["equip","unequip","drop","add"] },
       combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"} } },
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
     },
-    required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","combat","requires_roll","item_found","response_options","save_worthy"]
+    required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","inventory_updates","combat","requires_roll","item_found","response_options","save_worthy"]
   }
 };
 
@@ -951,7 +1010,7 @@ function chatToApiHistory(){
   // collapse our chat log into a compact user/assistant turn history for context
   const turns = [];
   state.chat.forEach(m=>{
-    if(m.type==='player') turns.push({ role:'user', content:[{type:'text', text:m.text}] });
+    if(m.type==='player' || m.type==='player-ooc') turns.push({ role:'user', content:[{type:'text', text:m.text}] });
     else if(m.type==='dm') turns.push({ role:'assistant', content:[{type:'text', text:m.text}] });
   });
   return turns;
@@ -970,11 +1029,13 @@ function handleOOC(){
   render();
 }
 
+function toggleOOCMode(){ state.oocMode = !state.oocMode; render(); }
 function submitFreeform(){
   const el = document.getElementById('composer-input');
   if(!el || !el.value.trim()) return;
   const text = el.value.trim();
   el.value = '';
+  if(state.oocMode){ sendAction(text, null, true); return; }
   if(isOOCMessage(text)){ handleOOC(); return; }
   sendAction(text);
 }
@@ -999,13 +1060,13 @@ async function callDMApi(body){
     return await res.json();
   }
 }
-async function sendAction(actionText, isRetry, resolution){
-  state.chat.push({ type:'player', text: actionText });
+async function sendAction(actionText, isOOCQuestion, resolution){
+  state.chat.push({ type: isOOCQuestion ? 'player-ooc' : 'player', text: actionText });
   state.lastOptions = [];
   state.loading = true;
   render();
 
-  const payload = { player_action:actionText, current_state:buildStateSnapshot(), resolution: resolution||null };
+  const payload = { player_action:actionText, current_state:buildStateSnapshot(), resolution: resolution||null, is_ooc: !!isOOCQuestion };
   try{
     const data = await callDMApi({
       model:"claude-sonnet-4-6",
@@ -1017,15 +1078,23 @@ async function sendAction(actionText, isRetry, resolution){
     });
     const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
     if(!toolUse) throw new Error('No structured response returned.');
-    await applyDMResponse(toolUse.input);
+    await applyDMResponse(toolUse.input, !!isOOCQuestion);
   }catch(err){
     state.chat.push({ type:'note', text:`⚠️ DM connection failed: ${err.message}` });
   }
   state.loading = false;
   render();
 }
-async function applyDMResponse(d){
-  state.chat.push({ type:'dm', text:d.narration, companions:d.companions||[] });
+async function applyDMResponse(d, isOOCQuestion){
+  state.chat.push({ type:'dm', text:d.narration, companions: isOOCQuestion ? [] : (d.companions||[]), isOOC: !!isOOCQuestion });
+  state.lastOptions = d.response_options || [];
+
+  if(isOOCQuestion){
+    // OOC questions get answered but never touch character/quest/combat/world/party state,
+    // and don't count as a save-worthy moment — nothing about the scene actually happened.
+    return;
+  }
+
   if(d.character_status && d.character_status.hp) state.character.hp = d.character_status.hp;
   if(d.quest && d.quest.current) state.character.quest = d.quest.current;
   if(d.combat){
@@ -1041,7 +1110,6 @@ async function applyDMResponse(d){
     if(d.session_summary.where_we_are) state.sessionMeta.whereWeAre = d.session_summary.where_we_are;
     if(d.session_summary.current_hook) state.sessionMeta.currentHook = d.session_summary.current_hook;
   }
-  state.lastOptions = d.response_options || [];
 
   let worldBibleChanged = false;
   if(d.world_bible_updates){
@@ -1065,6 +1133,26 @@ async function applyDMResponse(d){
     if(d.party_updates.thrum_status) state.party.thrumStatus = d.party_updates.thrum_status;
   }
 
+  let inventoryChanged = false;
+  if(d.inventory_updates){
+    const c = state.character;
+    (d.inventory_updates.equip||[]).forEach(name=>{
+      const idx = c.inventory.indexOf(name);
+      if(idx>=0){ c.inventory.splice(idx,1); if(!c.equipped.includes(name)) c.equipped.push(name); inventoryChanged = true; }
+    });
+    (d.inventory_updates.unequip||[]).forEach(name=>{
+      const idx = c.equipped.indexOf(name);
+      if(idx>=0){ c.equipped.splice(idx,1); if(!c.inventory.includes(name)) c.inventory.push(name); inventoryChanged = true; }
+    });
+    (d.inventory_updates.drop||[]).forEach(name=>{
+      const ii = c.inventory.indexOf(name); if(ii>=0){ c.inventory.splice(ii,1); inventoryChanged = true; }
+      const ei = c.equipped.indexOf(name); if(ei>=0){ c.equipped.splice(ei,1); inventoryChanged = true; }
+    });
+    (d.inventory_updates.add||[]).forEach(name=>{
+      if(!c.inventory.includes(name) && !c.equipped.includes(name)){ c.inventory.push(name); inventoryChanged = true; }
+    });
+  }
+
   if(d.item_found){
     state.modal = { kind:'item', item:d.item_found };
   } else if(d.requires_roll){
@@ -1072,10 +1160,11 @@ async function applyDMResponse(d){
   }
 
   await persistSaveFiles();
-  if(worldBibleChanged || partyChanged || (d.save_worthy||[]).length){
+  if(worldBibleChanged || partyChanged || inventoryChanged || (d.save_worthy||[]).length){
     const parts = [];
     if(worldBibleChanged) parts.push('world bible');
     if(partyChanged) parts.push('party');
+    if(inventoryChanged) parts.push('inventory');
     if((d.save_worthy||[]).length) parts.push('session log');
     state.chat.push({ type:'note', text:`💾 Auto-saved — ${parts.join(', ')} updated.` });
   }
@@ -1127,6 +1216,7 @@ function parseCharacterSheetMd(text){
   const hp = extractField(text, 'HP');
   const grounding = extractField(text, 'Magic Grounding');
   const quest = extractField(text, 'Quest');
+  const equippedLine = extractField(text, 'Equipped');
   const invLine = extractField(text, 'Inventory');
   const groundingMap = { 'Near Water':'water', 'On Stone':'stone', 'Wet Earth':'wet', 'Ungrounded':'none' };
   const out = {};
@@ -1136,6 +1226,7 @@ function parseCharacterSheetMd(text){
   if(hp) out.hp = hp;
   if(grounding && groundingMap[grounding]) out.magicCharge = groundingMap[grounding];
   if(quest) out.quest = quest;
+  if(equippedLine && !/^\(nothing\)$/i.test(equippedLine)) out.equipped = equippedLine.split(',').map(s=>s.trim()).filter(Boolean);
   if(invLine) out.inventory = invLine.split(',').map(s=>s.trim()).filter(Boolean);
   return out;
 }
@@ -1224,6 +1315,7 @@ function buildFileContent(kind){
 - **HP:** ${c.hp}
 - **Magic Grounding:** ${magicLabel()}
 - **Quest:** ${c.quest}
+- **Equipped:** ${c.equipped.join(', ') || '(nothing)'}
 - **Inventory:** ${c.inventory.join(', ')}
 `;
   }
