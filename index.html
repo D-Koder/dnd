@@ -214,41 +214,47 @@
 // ============================================================
 // STATE
 // ============================================================
-const state = {
-  character: {
-    name:'Raken', species:'Coralkin', klass:'Tech Mage Schemer',
-    hp:'Healthy', magicCharge:'stone',
-    quest:'The Hum Job — Port Halloway hull, Anchor-7',
-    inventory:['Modified focus-tool','Relic-scanning kit','Relic fragment (reactive)','Rusted key (in pedestal)','Dormant egg-object (unpaired)']
-  },
-  combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
-  chat: [
-    { type:'dm', text:"You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] }
-  ],
-  lastOptions: [],
-  loading: false,
-  modal: null, // { kind:'dice'|'item'|'edit'|'menu'|'inventory', ...payload }
-  tab: 'chat', // 'chat' | 'bestiary' | 'spells' | 'inventory' | 'status'
-  bestiary: { type:'humanoid', results:[], status:'' },
-  spells: { level:0, results:[], status:'' },
-
-  // ---- persistent save files (mirrors world_bible.md / party.md / character_sheet.md / session_log.md) ----
-  worldBible: {
-    setting: 'Veyrune — old magic and crashed spaceship tech mashed together a few centuries ago.',
-    locations: ["Port Halloway — starting town, a scrappy trade hub built around a crashed sky-ship's hull."],
-    factions: [],
-    npcs: [],
-  },
-  party: {
-    bex: "Bex — Overconfident Rogue-Mechanic. Sarcastic, loyal underneath it, secretly worried she's not as good as she brags. Names all her gadgets.",
-    thrum: "Thrum — Deadpan Warrior-Monk. Dry humor, philosophical, weirdly good at cooking. Collects small weird objects 'for luck'.",
-  },
-  sessionMeta: {
-    recentEvents: [],
-    openThreads: [],
-  },
-  filesLoaded: false,
-};
+function createDefaultState(){
+  return {
+    character: {
+      name:'Raken', species:'Coralkin', klass:'Tech Mage Schemer',
+      hp:'Healthy', magicCharge:'stone',
+      quest:'The Hum Job — Port Halloway hull, Anchor-7',
+      inventory:['Modified focus-tool','Relic-scanning kit','Relic fragment (reactive)','Rusted key (in pedestal)','Dormant egg-object (unpaired)']
+    },
+    combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
+    chat: [
+      { type:'dm', text:"You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] }
+    ],
+    lastOptions: [],
+    loading: false,
+    modal: null,
+    tab: 'chat',
+    bestiary: { type:'humanoid', results:[], status:'' },
+    spells: { level:0, results:[], status:'' },
+    worldBible: {
+      setting: 'Veyrune — old magic and crashed spaceship tech mashed together a few centuries ago.',
+      locations: ["Port Halloway — starting town, a scrappy trade hub built around a crashed sky-ship's hull."],
+      factions: [],
+      npcs: [],
+    },
+    party: {
+      bex: "Bex — Overconfident Rogue-Mechanic. Sarcastic, loyal underneath it, secretly worried she's not as good as she brags. Names all her gadgets.",
+      thrum: "Thrum — Deadpan Warrior-Monk. Dry humor, philosophical, weirdly good at cooking. Collects small weird objects 'for luck'.",
+      bexStatus: 'Healthy.',
+      thrumStatus: 'Healthy.',
+    },
+    sessionMeta: {
+      whereWeAre: '',
+      currentHook: '',
+      recentEvents: [],
+      openThreads: [],
+      sessionNumber: 1,
+    },
+    filesLoaded: false,
+  };
+}
+const state = createDefaultState();
 
 function glyph(cls){ return `<svg class="glyph ${cls||''}"><use href="#glyph"/></svg>`; }
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -276,6 +282,27 @@ async function storageSet(key, value){
     return;
   }
   try{ localStorage.setItem(key, value); }catch(e){ console.warn('save failed:', key, e); }
+}
+async function storageDelete(key){
+  if(typeof window.storage !== 'undefined'){
+    try{ await window.storage.delete(key); }catch(e){ /* already gone — fine */ }
+    return;
+  }
+  try{ localStorage.removeItem(key); }catch(e){}
+}
+function openResetConfirm(){
+  state.modal = { kind:'reset-confirm' };
+  render();
+}
+async function resetCampaign(){
+  await Promise.all([
+    storageDelete('veyrune:character_sheet'),
+    storageDelete('veyrune:world_bible'),
+    storageDelete('veyrune:party'),
+    storageDelete('veyrune:session_log'),
+  ]);
+  Object.assign(state, createDefaultState());
+  render();
 }
 const SAVE_FILE_PATHS = {
   character_sheet: ['saves/character_sheet.md', 'saves/character sheet.md'],
@@ -307,7 +334,14 @@ async function loadSaveFilesFromDisk(){
   if(char){ Object.assign(state.character, parseCharacterSheetMd(char)); found = true; }
   if(wb){ Object.assign(state.worldBible, parseWorldBibleMd(wb)); found = true; }
   if(party){ Object.assign(state.party, parsePartyMd(party)); found = true; }
-  if(log){ Object.assign(state.sessionMeta, parseSessionLogMd(log)); found = true; }
+  if(log){
+    const parsed = parseSessionLogMd(log);
+    if(parsed.partyBexStatus) state.party.bexStatus = parsed.partyBexStatus;
+    if(parsed.partyThrumStatus) state.party.thrumStatus = parsed.partyThrumStatus;
+    delete parsed.partyBexStatus; delete parsed.partyThrumStatus;
+    Object.assign(state.sessionMeta, parsed);
+    found = true;
+  }
   return found;
 }
 // Fallback: this device/browser's own storage from a previous session here.
@@ -439,7 +473,20 @@ function renderModal(){
   if(m.kind==='item') return renderItemModal(m);
   if(m.kind==='edit') return renderEditModal();
   if(m.kind==='preview') return renderPreviewModal(m);
+  if(m.kind==='reset-confirm') return renderResetConfirmModal();
   return '';
+}
+function renderResetConfirmModal(){
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>Reset Campaign?</h3>
+      <div class="flavor">This clears everything — character, world bible, party, session log, and the current chat — back to the starting state. This can't be undone. Files sitting in your ./saves folder aren't affected until you download and overwrite them again.</div>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="resetCampaign()">Reset Everything</button>
+      </div>
+    </div>
+  </div>`;
 }
 function closeModal(){ state.modal = null; render(); }
 
@@ -685,10 +732,12 @@ function renderStatusTab(){
     <div class="subhead">Party</div>
     <div class="ref-card">
       <div class="rc-name" style="margin-bottom:2px;">Bex</div>
+      <div class="rc-meta" style="color:var(--teal); margin-bottom:6px;">${escHtml(state.party.bexStatus)}</div>
       <div class="rc-meta" style="white-space:pre-line;">${escHtml(state.party.bex)}</div>
     </div>
     <div class="ref-card">
       <div class="rc-name" style="margin-bottom:2px;">Thrum</div>
+      <div class="rc-meta" style="color:var(--teal); margin-bottom:6px;">${escHtml(state.party.thrumStatus)}</div>
       <div class="rc-meta" style="white-space:pre-line;">${escHtml(state.party.thrum)}</div>
     </div>
     <div class="subhead">Save-Worthy Moments</div>
@@ -708,6 +757,8 @@ function renderStatusTab(){
       <button class="pill-btn" onclick="openFilePreview('party')">party.md</button>
       <button class="pill-btn" onclick="openFilePreview('session_log')">session_log.md</button>
     </div>
+    <div class="subhead" style="color:var(--danger);">Danger Zone</div>
+    <button class="pill-btn" style="background:transparent; border-color:var(--danger); color:var(--danger);" onclick="openResetConfirm()">🗑️ Reset Campaign</button>
   `;
 }
 
@@ -730,10 +781,14 @@ Factions: ${wb.factions.join(' | ') || '(none yet)'}
 NPCs: ${wb.npcs.join(' | ') || '(none yet)'}
 
 PARTY:
-${state.party.bex}
-${state.party.thrum}
+Bex — ${state.party.bex}
+  Current status: ${state.party.bexStatus}
+Thrum — ${state.party.thrum}
+  Current status: ${state.party.thrumStatus}
 
-SESSION LOG (recent):
+SESSION LOG:
+Where we are right now: ${state.sessionMeta.whereWeAre || '(session just starting)'}
+Current hook: ${state.sessionMeta.currentHook || state.character.quest}
 Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none yet)'}
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
@@ -741,6 +796,7 @@ Never resolve dice outcomes yourself. If an action needs a roll (attack, risky a
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
+Always fill session_summary: where_we_are is a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose), and current_hook is the overarching quest framing (can repeat unchanged most turns). Always fill party_updates.bex_status and thrum_status with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.") — update it when their condition or mood actually changes, otherwise repeat the last one unchanged.
 Whenever a choice is meaningful, offer exactly 3 response_options representing distinct approaches (e.g. cautious / aggressive / clever) — the player can always type their own action instead, so options are a convenience, not a constraint. Only return fewer than 3 (including zero) when no real choice applies, such as mid-resolution beats.
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
 }
@@ -755,6 +811,10 @@ const DM_TOOL_SCHEMA = {
       companions:{ type:"array", items:{ type:"object", properties:{ name:{type:"string",enum:["Bex","Thrum"]}, line:{type:"string"} }, required:["name","line"] } },
       character_status:{ type:"object", properties:{ hp:{type:"string",enum:["Healthy","Bruised","Hurt","Critical"]} }, required:["hp"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
+      session_summary:{ type:"object", properties:{
+        where_we_are:{type:"string"},
+        current_hook:{type:"string"}
+      }, required:["where_we_are","current_hook"] },
       world_bible_updates:{ type:"object", properties:{
         new_locations:{type:"array",items:{type:"string"}},
         new_factions:{type:"array",items:{type:"string"}},
@@ -762,15 +822,17 @@ const DM_TOOL_SCHEMA = {
       }, required:["new_locations","new_factions","new_npcs"] },
       party_updates:{ type:"object", properties:{
         bex_note:{type:["string","null"]},
-        thrum_note:{type:["string","null"]}
-      }, required:["bex_note","thrum_note"] },
+        thrum_note:{type:["string","null"]},
+        bex_status:{type:["string","null"]},
+        thrum_status:{type:["string","null"]}
+      }, required:["bex_note","thrum_note","bex_status","thrum_status"] },
       combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"} } },
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
     },
-    required:["narration","companions","character_status","quest","world_bible_updates","party_updates","combat","requires_roll","item_found","response_options","save_worthy"]
+    required:["narration","companions","character_status","quest","session_summary","world_bible_updates","party_updates","combat","requires_roll","item_found","response_options","save_worthy"]
   }
 };
 
@@ -871,6 +933,10 @@ async function applyDMResponse(d){
   }
   (d.save_worthy||[]).forEach(s=>state.sessionMeta.recentEvents.push(s));
   (d.quest && d.quest.new_threads || []).forEach(t=>state.sessionMeta.openThreads.push(t));
+  if(d.session_summary){
+    if(d.session_summary.where_we_are) state.sessionMeta.whereWeAre = d.session_summary.where_we_are;
+    if(d.session_summary.current_hook) state.sessionMeta.currentHook = d.session_summary.current_hook;
+  }
   state.lastOptions = d.response_options || [];
 
   let worldBibleChanged = false;
@@ -891,6 +957,8 @@ async function applyDMResponse(d){
       state.party.thrum += `\n- ${d.party_updates.thrum_note}`;
       partyChanged = true;
     }
+    if(d.party_updates.bex_status) state.party.bexStatus = d.party_updates.bex_status;
+    if(d.party_updates.thrum_status) state.party.thrumStatus = d.party_updates.thrum_status;
   }
 
   if(d.item_found){
@@ -920,9 +988,12 @@ const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bi
 
 // ---- Import: reverse of buildFileContent(), for loading real files back in ----
 function extractSection(text, header){
-  const re = new RegExp(`##\\s*${header}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'i');
-  const m = text.match(re);
-  return m ? m[1].trim() : '';
+  // Global + take the LAST match: real session logs can have multiple concatenated
+  // entries (session continued → session concluded) appended over time. Always want
+  // the most recent block, which is further down the file, not the first one.
+  const re = new RegExp(`##\\s*${header}.*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'gi');
+  const matches = [...text.matchAll(re)];
+  return matches.length ? matches[matches.length - 1][1].trim() : '';
 }
 function extractListItems(sectionText){
   if(!sectionText) return [];
@@ -931,14 +1002,24 @@ function extractListItems(sectionText){
     .filter(l=>l && !/^\(none yet\)$/i.test(l));
 }
 function extractField(text, label){
-  const re = new RegExp(`\\*\\*${label}:?\\*\\*\\s*(.*)`, 'i');
-  const m = text.match(re);
-  return m ? m[1].trim() : null;
+  const re = new RegExp(`\\*\\*${label}:?\\*\\*\\s*(.*)`, 'gi');
+  const matches = [...text.matchAll(re)];
+  return matches.length ? matches[matches.length - 1][1].trim() : null;
 }
 function parseCharacterSheetMd(text){
   const name = extractField(text, 'Name');
-  const species = extractField(text, 'Species/type') || extractField(text, 'Species');
-  const klass = extractField(text, 'Class');
+  let species = extractField(text, 'Species/type') || extractField(text, 'Species');
+  let klass = extractField(text, 'Class');
+  // Your original character sheet writes this as one combined descriptive line
+  // ("Coralkin — water/earth-fueled Tech Mage Schemer") rather than separate
+  // Species/Class fields. Split on the em-dash so klass doesn't end up duplicated.
+  if(species && species.includes('—')){
+    const parts = species.split('—');
+    const spOnly = parts[0].trim();
+    const rest = parts.slice(1).join('—').trim();
+    species = spOnly;
+    if(!klass && rest) klass = rest;
+  }
   const hp = extractField(text, 'HP');
   const grounding = extractField(text, 'Magic Grounding');
   const quest = extractField(text, 'Quest');
@@ -970,10 +1051,24 @@ function parsePartyMd(text){
   return out;
 }
 function parseSessionLogMd(text){
-  return {
-    recentEvents: extractListItems(extractSection(text, 'Save-Worthy Moments')),
+  const sessionMatches = [...text.matchAll(/\*\*Session:?\*\*\s*(\d+)/gi)];
+  const sessionMatch = sessionMatches.length ? sessionMatches[sessionMatches.length-1] : null;
+  const partyStatus = extractSection(text, 'Party Status');
+  const bexStatus = partyStatus.match(/\*\*Bex:?\*\*\s*(.*)/i);
+  const thrumStatus = partyStatus.match(/\*\*Thrum:?\*\*\s*(.*)/i);
+  const out = {
+    whereWeAre: extractSection(text, 'Where We Are Right Now'),
+    currentHook: extractSection(text, 'Current Quest\\s*/\\s*Hook') || extractSection(text, 'Current Quest'),
+    // "Recent Events" is the real template's name; "Save-Worthy Moments" is this app's older export name — try both
+    recentEvents: extractListItems(extractSection(text, 'Recent Events')).length
+      ? extractListItems(extractSection(text, 'Recent Events'))
+      : extractListItems(extractSection(text, 'Save-Worthy Moments')),
     openThreads: extractListItems(extractSection(text, 'Open Threads')),
   };
+  if(sessionMatch) out.sessionNumber = parseInt(sessionMatch[1], 10);
+  if(bexStatus) out.partyBexStatus = bexStatus[1].trim();
+  if(thrumStatus) out.partyThrumStatus = thrumStatus[1].trim();
+  return out;
 }
 function detectFileKind(filename){
   const norm = filename.toLowerCase().replace(/\.md$/,'').replace(/[\s_-]+/g,'');
@@ -994,7 +1089,13 @@ async function handleImportFiles(event){
     if(kind === 'character_sheet') Object.assign(state.character, parseCharacterSheetMd(text));
     else if(kind === 'world_bible') Object.assign(state.worldBible, parseWorldBibleMd(text));
     else if(kind === 'party') Object.assign(state.party, parsePartyMd(text));
-    else if(kind === 'session_log') Object.assign(state.sessionMeta, parseSessionLogMd(text));
+    else if(kind === 'session_log'){
+      const parsed = parseSessionLogMd(text);
+      if(parsed.partyBexStatus) state.party.bexStatus = parsed.partyBexStatus;
+      if(parsed.partyThrumStatus) state.party.thrumStatus = parsed.partyThrumStatus;
+      delete parsed.partyBexStatus; delete parsed.partyThrumStatus;
+      Object.assign(state.sessionMeta, parsed);
+    }
     loaded.push(FILE_NAMES[kind]);
   }
   event.target.value = '';
@@ -1056,22 +1157,32 @@ ${state.party.thrum}
       if(m.type==='note') return `_${m.text}_`;
       return '';
     }).join('\n\n');
-    return `# Session Log (auto-export)
+    const today = new Date().toISOString().slice(0,10);
+    return `# Session Log (SAVE STATE — source of truth for "where we are")
 
-## Character Snapshot
-- Name: ${c.name} (${c.species} ${c.klass})
-- HP: ${c.hp}
-- Magic Grounding: ${magicLabel()}
-- Quest: ${c.quest}
-- Inventory: ${c.inventory.join(', ')}
+**Session:** ${state.sessionMeta.sessionNumber}
+**Last updated:** ${today}
 
-## Save-Worthy Moments
+## Where We Are Right Now
+${state.sessionMeta.whereWeAre || '(session just starting — nothing to recap yet)'}
+
+## Current Quest / Hook
+${state.sessionMeta.currentHook || c.quest}
+
+## Recent Events (last few things that happened)
 ${state.sessionMeta.recentEvents.map(s=>'- '+s).join('\n') || '- (none yet)'}
 
 ## Open Threads
 ${state.sessionMeta.openThreads.map(s=>'- '+s).join('\n') || '- (none yet)'}
 
-## Transcript
+## Party Status
+- **${c.name}:** ${c.hp}. Holding: ${c.inventory.join(', ') || '(nothing)'}.
+- **Bex:** ${state.party.bexStatus}
+- **Thrum:** ${state.party.thrumStatus}
+${state.worldBible.npcs.map(n=>'- **NPC:** '+n).join('\n')}
+
+---
+## Full Transcript (appendix)
 ${transcript}
 `;
   }
