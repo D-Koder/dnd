@@ -390,6 +390,7 @@ function renderModal(){
   if(m.kind==='dice') return renderDiceModal(m);
   if(m.kind==='item') return renderItemModal(m);
   if(m.kind==='edit') return renderEditModal();
+  if(m.kind==='preview') return renderPreviewModal(m);
   return '';
 }
 function closeModal(){ state.modal = null; render(); }
@@ -645,14 +646,14 @@ function renderStatusTab(){
     <div class="subhead">Save-Worthy Moments</div>
     ${state.sessionMeta.recentEvents.length ? state.sessionMeta.recentEvents.map(s=>`<div class="msg-note" style="text-align:left;">📝 ${escHtml(s)}</div>`).join('') : '<div class="flavor">None yet.</div>'}
     <div class="subhead">Save Files</div>
-    <div class="flavor" style="margin-bottom:10px;">Auto-saved after every DM turn. Export copies for your project folder.</div>
+    <div class="flavor" style="margin-bottom:10px;">Auto-saved after every DM turn. Tap a file to preview, then download.</div>
     <div class="ref-row">
-      <button class="pill-btn" onclick="exportFile('character_sheet')">character_sheet.md</button>
-      <button class="pill-btn" onclick="exportFile('world_bible')">world_bible.md</button>
+      <button class="pill-btn" onclick="openFilePreview('character_sheet')">character_sheet.md</button>
+      <button class="pill-btn" onclick="openFilePreview('world_bible')">world_bible.md</button>
     </div>
     <div class="ref-row">
-      <button class="pill-btn" onclick="exportFile('party')">party.md</button>
-      <button class="pill-btn" onclick="exportLog()">session_log.md</button>
+      <button class="pill-btn" onclick="openFilePreview('party')">party.md</button>
+      <button class="pill-btn" onclick="openFilePreview('session_log')">session_log.md</button>
     </div>
   `;
 }
@@ -862,11 +863,11 @@ function downloadMarkdown(filename, content){
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-function exportFile(kind){
+function buildFileContent(kind){
   const c = state.character;
   const wb = state.worldBible;
   if(kind === 'character_sheet'){
-    downloadMarkdown('character_sheet.md', `# My Character
+    return `# My Character
 
 - **Name:** ${c.name}
 - **Species/type:** ${c.species}
@@ -877,9 +878,10 @@ function exportFile(kind){
 - **Magic Grounding:** ${magicLabel()}
 - **Quest:** ${c.quest}
 - **Inventory:** ${c.inventory.join(', ')}
-`);
-  } else if(kind === 'world_bible'){
-    downloadMarkdown('world_bible.md', `# World Bible
+`;
+  }
+  if(kind === 'world_bible'){
+    return `# World Bible
 
 ## The Setting
 ${wb.setting}
@@ -892,32 +894,27 @@ ${wb.factions.map(f=>'- '+f).join('\n') || '- (none yet)'}
 
 ## Key NPCs
 ${wb.npcs.map(n=>'- '+n).join('\n') || '- (none yet)'}
-`);
-  } else if(kind === 'party'){
-    downloadMarkdown('party.md', `# Party Members
+`;
+  }
+  if(kind === 'party'){
+    return `# Party Members
 
 ## Bex
 ${state.party.bex}
 
 ## Thrum
 ${state.party.thrum}
-`);
+`;
   }
-}
-
-// ============================================================
-// SESSION LOG EXPORT
-// ============================================================
-function exportLog(){
-  const c = state.character;
-  const transcript = state.chat.map(m=>{
-    if(m.type==='dm') return `**DM:** ${m.text}` + (m.companions||[]).map(cc=>`\n> **${cc.name}:** ${cc.line}`).join('');
-    if(m.type==='player') return `**You:** ${m.text}`;
-    if(m.type==='roll') return `_${m.text}_`;
-    if(m.type==='note') return `_${m.text}_`;
-    return '';
-  }).join('\n\n');
-  const md = `# Session Log (auto-export)
+  if(kind === 'session_log'){
+    const transcript = state.chat.map(m=>{
+      if(m.type==='dm') return `**DM:** ${m.text}` + (m.companions||[]).map(cc=>`\n> **${cc.name}:** ${cc.line}`).join('');
+      if(m.type==='player') return `**You:** ${m.text}`;
+      if(m.type==='roll') return `_${m.text}_`;
+      if(m.type==='note') return `_${m.text}_`;
+      return '';
+    }).join('\n\n');
+    return `# Session Log (auto-export)
 
 ## Character Snapshot
 - Name: ${c.name} (${c.species} ${c.klass})
@@ -935,7 +932,39 @@ ${state.sessionMeta.openThreads.map(s=>'- '+s).join('\n') || '- (none yet)'}
 ## Transcript
 ${transcript}
 `;
-  downloadMarkdown('session_log.md', md);
+  }
+  return '';
+}
+const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md' };
+function openFilePreview(kind){
+  state.modal = { kind:'preview', fileKind:kind };
+  render();
+}
+function renderPreviewModal(m){
+  const filename = FILE_NAMES[m.fileKind];
+  const content = buildFileContent(m.fileKind);
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet" style="max-width:560px;">
+      <h3>${filename}</h3>
+      <pre style="max-height:50vh; overflow-y:auto; white-space:pre-wrap; font-family:var(--mono); font-size:11px;
+        line-height:1.6; color:var(--cream); background:var(--bg); border:1px solid var(--line);
+        padding:12px; margin:0 0 14px; border-radius:2px;">${escHtml(content)}</pre>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="closeModal()">Close</button>
+        <button class="btn-primary" onclick='downloadMarkdown(${escAttr(JSON.stringify(filename))}, ${escAttr(JSON.stringify(content))}); closeModal();'>Download</button>
+      </div>
+    </div>
+  </div>`;
+}
+function exportFile(kind){
+  downloadMarkdown(FILE_NAMES[kind], buildFileContent(kind));
+}
+
+// ============================================================
+// SESSION LOG EXPORT
+// ============================================================
+function exportLog(){
+  downloadMarkdown('session_log.md', buildFileContent('session_log'));
   closeModal();
 }
 
