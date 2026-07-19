@@ -223,9 +223,8 @@ function createDefaultState(){
       inventory:['Modified focus-tool','Relic-scanning kit','Relic fragment (reactive)','Rusted key (in pedestal)','Dormant egg-object (unpaired)']
     },
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
-    chat: [
-      { type:'dm', text:"You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] }
-    ],
+    chat: [],
+    booting: true,
     lastOptions: [],
     loading: false,
     modal: null,
@@ -302,6 +301,8 @@ async function resetCampaign(){
     storageDelete('veyrune:session_log'),
   ]);
   Object.assign(state, createDefaultState());
+  state.booting = false;
+  state.chat = [{ type:'dm', text:"You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] }];
   render();
 }
 const SAVE_FILE_PATHS = {
@@ -360,20 +361,45 @@ async function loadSaveFilesFromStorage(){
   return found;
 }
 async function bootSaveFiles(){
+  let opener = null;
   try{
     const fromDisk = await loadSaveFilesFromDisk();
     if(fromDisk){
       await persistSaveFiles();
-      state.chat.push({ type:'note', text:'💾 Loaded save files from ./saves — this is the active save for this session.' });
+      opener = buildResumeOpener('💾 Loaded save files from ./saves — continuing where you left off.');
     } else {
       const fromStorage = await loadSaveFilesFromStorage();
-      if(!fromStorage){
-        state.chat.push({ type:'note', text:'No saved progress found. If you have existing save files, go to Status → Import Save Files to load them before continuing.' });
+      if(fromStorage){
+        opener = buildResumeOpener('💾 Resumed from this device\'s saved progress.');
+      } else {
+        opener = {
+          type:'note-and-dm',
+          note: 'No saved progress found. If you have existing save files, go to Status → Import Save Files to load them before continuing.',
+          dm: "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted."
+        };
       }
     }
-  }catch(e){ console.warn('Could not load saved files, starting fresh:', e); }
+  }catch(e){
+    console.warn('Could not load saved files, starting fresh:', e);
+    opener = {
+      type:'note-and-dm',
+      note: '⚠️ Save files could not be loaded — starting fresh.',
+      dm: "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted."
+    };
+  }
+  // Only now — after loading is fully resolved — does the chat get its first message.
+  state.chat.push({ type:'note', text: opener.note });
+  state.chat.push({ type:'dm', text: opener.dm, companions:[] });
   state.filesLoaded = true;
+  state.booting = false;
   render();
+}
+function buildResumeOpener(noteText){
+  const meta = state.sessionMeta;
+  const recap = meta.whereWeAre
+    ? meta.whereWeAre
+    : "You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.";
+  return { type:'resume', note: noteText, dm: recap };
 }
 async function persistSaveFiles(){
   await Promise.all([
@@ -406,13 +432,16 @@ function render(){
       <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
     </div>
     ${isChat ? `
-      <div id="feed">${state.chat.map(renderChatItem).join('')}${state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : ''}</div>
+      <div id="feed">${state.booting
+        ? `<div class="msg-thinking">Loading save files…</div>`
+        : state.chat.map(renderChatItem).join('') + (state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : '')
+      }</div>
       ${state.combat.active ? renderEnemyStrip() : ''}
       ${state.lastOptions.length && !state.loading ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
       <div class="composer">
-        <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)">⚄</button>
-        <input type="text" id="composer-input" placeholder="What do you do?" onkeydown="if(event.key==='Enter') submitFreeform()">
-        <button class="icon-btn send" title="Send" onclick="submitFreeform()">SEND</button>
+        <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting?'disabled':''}>⚄</button>
+        <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':'What do you do?'}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting?'disabled':''}>
+        <button class="icon-btn send" title="Send" onclick="submitFreeform()" ${state.booting?'disabled':''}>SEND</button>
       </div>
     ` : `<div class="tab-panel">${renderTabPanel()}</div>`}
     <div class="tab-bar">
