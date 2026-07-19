@@ -90,6 +90,7 @@
     border-left:2px solid var(--brass); padding-left:10px; margin-top:6px;
   }
   .msg-roll .speaker-tag{ margin-right:6px; }
+  .msg-longpress{ cursor:pointer; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .msg-note{ font-family:var(--mono); font-size:11px; color:var(--cream-dim); font-style:italic; margin-top:6px; }
   .msg-ooc{
     font-family:var(--mono); font-size:11px; color:var(--violet); background:rgba(139,107,184,0.08);
@@ -365,11 +366,13 @@ async function bootSaveFiles(){
   try{
     const fromDisk = await loadSaveFilesFromDisk();
     if(fromDisk){
+      startNewSessionBoundary();
       await persistSaveFiles();
       opener = buildResumeOpener('💾 Loaded save files from ./saves — continuing where you left off.');
     } else {
       const fromStorage = await loadSaveFilesFromStorage();
       if(fromStorage){
+        startNewSessionBoundary();
         opener = buildResumeOpener('💾 Resumed from this device\'s saved progress.');
       } else {
         opener = {
@@ -393,6 +396,14 @@ async function bootSaveFiles(){
   state.filesLoaded = true;
   state.booting = false;
   render();
+}
+function startNewSessionBoundary(){
+  // A fresh app open is a new sitting at the table. The imported "Recent Events" describe
+  // the PAST session and are already folded into whereWeAre/quest — carrying that list
+  // forward forever would just accumulate stale history in the Status tab. Open threads,
+  // quest, character, world bible, and party all still persist across sessions as normal.
+  state.sessionMeta.sessionNumber = (state.sessionMeta.sessionNumber || 1) + 1;
+  state.sessionMeta.recentEvents = [];
 }
 function buildResumeOpener(noteText){
   const meta = state.sessionMeta;
@@ -470,8 +481,8 @@ function renderChatItem(m, i){
     const divider = i>0 ? `<div class="turn-divider">${glyph()}<div class="line"></div></div>` : '';
     return `${divider}<div class="msg-dm"><span class="speaker-tag">[DM]</span>${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
   }
-  if(m.type==='player') return `<div class="msg-player"><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
-  if(m.type==='roll') return `<div class="msg-roll"><span class="speaker-tag">[ROLL]</span>${escHtml(m.text)}</div>`;
+  if(m.type==='player') return `<div class="msg-player msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
+  if(m.type==='roll') return `<div class="msg-roll msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[ROLL]</span>${escHtml(m.text)}</div>`;
   if(m.type==='note') return `<div class="msg-note"><span class="speaker-tag">[NOTE]</span>${escHtml(m.text)}</div>`;
   if(m.type==='ooc'){
     return `<div class="msg-ooc">
@@ -482,6 +493,63 @@ function renderChatItem(m, i){
     </div>`;
   }
   return '';
+}
+function longPressAttrs(idx){
+  return `onpointerdown="startLongPress(${idx})" onpointerup="cancelLongPress()" onpointerleave="cancelLongPress()" onpointercancel="cancelLongPress()" oncontextmenu="event.preventDefault(); openMessageMenu(${idx}); return false;"`;
+}
+let longPressTimer = null;
+function startLongPress(idx){
+  cancelLongPress();
+  longPressTimer = setTimeout(()=>{ openMessageMenu(idx); }, 500);
+}
+function cancelLongPress(){
+  if(longPressTimer){ clearTimeout(longPressTimer); longPressTimer = null; }
+}
+function openMessageMenu(idx){
+  const item = state.chat[idx];
+  if(!item || (item.type!=='player' && item.type!=='roll')) return;
+  state.modal = { kind:'message-menu', idx, editing:false, editText:item.text };
+  render();
+}
+function renderMessageMenuModal(m){
+  const item = state.chat[m.idx];
+  if(!item) return '';
+  if(m.editing){
+    return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+      <div class="sheet">
+        <h3>Edit Message</h3>
+        <textarea id="msg-edit-textarea" rows="3" style="width:100%;">${escHtml(m.editText)}</textarea>
+        <div class="sheet-actions">
+          <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn-primary" onclick="saveMessageEdit()">Save</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>${item.type==='roll' ? 'Dice Roll' : 'Your Message'}</h3>
+      <div class="flavor">"${escHtml(item.text)}"</div>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" onclick="startMessageEdit()">Edit</button>
+        <button class="btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="deleteMessage()">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+function startMessageEdit(){ state.modal.editing = true; render(); }
+function saveMessageEdit(){
+  const val = document.getElementById('msg-edit-textarea').value;
+  const item = state.chat[state.modal.idx];
+  if(item) item.text = val;
+  state.modal = null;
+  render();
+}
+function deleteMessage(){
+  state.chat.splice(state.modal.idx, 1);
+  state.modal = null;
+  render();
 }
 function renderEnemyStrip(){
   const c = state.combat;
@@ -503,6 +571,7 @@ function renderModal(){
   if(m.kind==='edit') return renderEditModal();
   if(m.kind==='preview') return renderPreviewModal(m);
   if(m.kind==='reset-confirm') return renderResetConfirmModal();
+  if(m.kind==='message-menu') return renderMessageMenuModal(m);
   return '';
 }
 function renderResetConfirmModal(){
@@ -668,9 +737,15 @@ async function fetchBestiary(){
   state.bestiary.status = 'Scanning ' + type + ' records…';
   render();
   try{
-    const data = await open5e(`/v1/monsters/?type=${encodeURIComponent(type)}&limit=20`);
-    state.bestiary.results = data.results || [];
-    state.bestiary.status = state.bestiary.results.length ? '' : 'No records found.';
+    // v1's ?type= query param isn't reliable — filter client-side against a broad sample instead.
+    let data = await open5e(`/v1/monsters/?limit=100`);
+    let matches = (data.results || []).filter(m => (m.type||'').toLowerCase() === type.toLowerCase());
+    if(!matches.length && data.next){
+      const page2 = await open5e(`/v1/monsters/?limit=100&offset=100`);
+      matches = (page2.results || []).filter(m => (m.type||'').toLowerCase() === type.toLowerCase());
+    }
+    state.bestiary.results = matches;
+    state.bestiary.status = matches.length ? '' : 'No records found in this sample — try again, or try a more common type.';
   }catch(err){
     state.bestiary.status = 'Lookup failed: ' + err.message;
   }
