@@ -289,6 +289,11 @@ async function loadSaveFiles(){
     if(wb) Object.assign(state.worldBible, JSON.parse(wb));
     if(party) Object.assign(state.party, JSON.parse(party));
     if(meta) Object.assign(state.sessionMeta, JSON.parse(meta));
+    if(!char && !wb && !party && !meta){
+      // Nothing saved on this device/browser yet — browsers can't silently read
+      // your Files app, so nudge toward the manual import instead of assuming a fresh start.
+      state.chat.push({ type:'note', text:'No saved progress found on this device. If you have existing save files, go to Status → Import Save Files to load them before continuing.' });
+    }
   }catch(e){ console.warn('Could not load saved files, starting fresh:', e); }
   state.filesLoaded = true;
   render();
@@ -646,7 +651,12 @@ function renderStatusTab(){
     <div class="subhead">Save-Worthy Moments</div>
     ${state.sessionMeta.recentEvents.length ? state.sessionMeta.recentEvents.map(s=>`<div class="msg-note" style="text-align:left;">📝 ${escHtml(s)}</div>`).join('') : '<div class="flavor">None yet.</div>'}
     <div class="subhead">Save Files</div>
-    <div class="flavor" style="margin-bottom:10px;">Auto-saved after every DM turn. Tap a file to preview, then download.</div>
+    <div class="flavor" style="margin-bottom:10px;">Load real files from disk to make them the active save — useful when starting a session on a new device or after editing them by hand.</div>
+    <label class="pill-btn" style="display:inline-block; text-align:center; cursor:pointer;">
+      📂 Import Save Files
+      <input type="file" accept=".md,text/markdown" multiple onchange="handleImportFiles(event)" style="display:none;">
+    </label>
+    <div class="flavor" style="margin:10px 0;">Auto-saved after every DM turn. Tap a file below to preview, then download.</div>
     <div class="ref-row">
       <button class="pill-btn" onclick="openFilePreview('character_sheet')">character_sheet.md</button>
       <button class="pill-btn" onclick="openFilePreview('world_bible')">world_bible.md</button>
@@ -863,6 +873,95 @@ function downloadMarkdown(filename, content){
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
+const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md' };
+
+// ---- Import: reverse of buildFileContent(), for loading real files back in ----
+function extractSection(text, header){
+  const re = new RegExp(`##\\s*${header}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'i');
+  const m = text.match(re);
+  return m ? m[1].trim() : '';
+}
+function extractListItems(sectionText){
+  if(!sectionText) return [];
+  return sectionText.split('\n')
+    .map(l=>l.replace(/^-\s*/,'').trim())
+    .filter(l=>l && !/^\(none yet\)$/i.test(l));
+}
+function extractField(text, label){
+  const re = new RegExp(`\\*\\*${label}:?\\*\\*\\s*(.*)`, 'i');
+  const m = text.match(re);
+  return m ? m[1].trim() : null;
+}
+function parseCharacterSheetMd(text){
+  const name = extractField(text, 'Name');
+  const species = extractField(text, 'Species/type') || extractField(text, 'Species');
+  const klass = extractField(text, 'Class');
+  const hp = extractField(text, 'HP');
+  const grounding = extractField(text, 'Magic Grounding');
+  const quest = extractField(text, 'Quest');
+  const invLine = extractField(text, 'Inventory');
+  const groundingMap = { 'Near Water':'water', 'On Stone':'stone', 'Wet Earth':'wet', 'Ungrounded':'none' };
+  const out = {};
+  if(name) out.name = name;
+  if(species) out.species = species;
+  if(klass) out.klass = klass;
+  if(hp) out.hp = hp;
+  if(grounding && groundingMap[grounding]) out.magicCharge = groundingMap[grounding];
+  if(quest) out.quest = quest;
+  if(invLine) out.inventory = invLine.split(',').map(s=>s.trim()).filter(Boolean);
+  return out;
+}
+function parseWorldBibleMd(text){
+  return {
+    locations: extractListItems(extractSection(text, 'Known Locations')),
+    factions: extractListItems(extractSection(text, 'Factions')),
+    npcs: extractListItems(extractSection(text, 'Key NPCs')),
+  };
+}
+function parsePartyMd(text){
+  const bex = extractSection(text, 'Bex');
+  const thrum = extractSection(text, 'Thrum');
+  const out = {};
+  if(bex) out.bex = bex;
+  if(thrum) out.thrum = thrum;
+  return out;
+}
+function parseSessionLogMd(text){
+  return {
+    recentEvents: extractListItems(extractSection(text, 'Save-Worthy Moments')),
+    openThreads: extractListItems(extractSection(text, 'Open Threads')),
+  };
+}
+function detectFileKind(filename){
+  const norm = filename.toLowerCase().replace(/\.md$/,'').replace(/[\s_-]+/g,'');
+  if(norm.includes('charactersheet')) return 'character_sheet';
+  if(norm.includes('worldbible')) return 'world_bible';
+  if(norm === 'party' || norm.includes('party')) return 'party';
+  if(norm.includes('sessionlog')) return 'session_log';
+  return null;
+}
+async function handleImportFiles(event){
+  const files = Array.from(event.target.files || []);
+  if(!files.length) return;
+  const loaded = [];
+  for(const file of files){
+    const kind = detectFileKind(file.name);
+    if(!kind) continue;
+    const text = await file.text();
+    if(kind === 'character_sheet') Object.assign(state.character, parseCharacterSheetMd(text));
+    else if(kind === 'world_bible') Object.assign(state.worldBible, parseWorldBibleMd(text));
+    else if(kind === 'party') Object.assign(state.party, parsePartyMd(text));
+    else if(kind === 'session_log') Object.assign(state.sessionMeta, parseSessionLogMd(text));
+    loaded.push(FILE_NAMES[kind]);
+  }
+  event.target.value = '';
+  if(loaded.length){
+    await persistSaveFiles();
+    state.chat.push({ type:'note', text:`💾 Loaded from disk: ${loaded.join(', ')}. This is now the active save.` });
+  }
+  render();
+}
+
 function buildFileContent(kind){
   const c = state.character;
   const wb = state.worldBible;
@@ -935,7 +1034,6 @@ ${transcript}
   }
   return '';
 }
-const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md' };
 function openFilePreview(kind){
   state.modal = { kind:'preview', fileKind:kind };
   render();
