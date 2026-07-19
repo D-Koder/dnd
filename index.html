@@ -541,7 +541,24 @@ function renderChatItem(m, i){
       </div>
     </div>`;
   }
+  if(m.type==='dm-error'){
+    return `<div class="msg-invalid">
+      <div class="speaker-tag">[CONNECTION FAILED]</div>
+      <div>${escHtml(m.text)}</div>
+      <div class="sheet-actions" style="margin-top:10px;">
+        <button class="btn-secondary" style="flex:none; padding:8px 14px;" onclick="dismissDMError(${i})">Dismiss</button>
+        <button class="btn-primary" style="flex:none; padding:8px 14px;" onclick="retryDMError(${i})">🔄 Retry</button>
+      </div>
+    </div>`;
+  }
   return '';
+}
+function dismissDMError(idx){ state.chat.splice(idx, 1); render(); }
+function retryDMError(idx){
+  const item = state.chat[idx];
+  if(!item || item.type !== 'dm-error') return;
+  state.chat.splice(idx, 1);
+  sendAction(item.originalAction, { ...item.originalMeta, skipPlayerBubble:true });
 }
 function longPressAttrs(idx){
   return `onpointerdown="startLongPress(${idx})" onpointerup="cancelLongPress()" onpointerleave="cancelLongPress()" onpointercancel="cancelLongPress()" oncontextmenu="event.preventDefault(); openMessageMenu(${idx}); return false;"`;
@@ -1079,6 +1096,7 @@ If the request has "is_resume": true, the player just reopened the session after
 Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
+Important distinction for inventory_updates.add: physically handling, holding up, showing, or inspecting an item — including mid-negotiation with a vendor, or picking something up just to examine it — is NOT the same as acquiring it. Only call add once ownership actually changes: a purchase is paid and agreed, a trade is finalized, a found object is kept for good. If the player is holding an item to negotiate over it, haggle, or show someone, just narrate that in prose and wait — don't add it to inventory until the transaction (or scene) actually resolves in the player's favor.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
@@ -1212,7 +1230,7 @@ function logDebugEntry(entry){
   state.debugLog.unshift({ time: new Date().toLocaleTimeString(), ...entry });
   if(state.debugLog.length > 50) state.debugLog.length = 50;
 }
-async function callDMApi(body){
+async function attemptBothEndpoints(body){
   // /api/dm is the Vercel serverless proxy (keeps your API key server-side).
   // If it's not present — e.g. previewing this file inside Claude.ai's artifact panel —
   // fall back to calling Anthropic directly, which that environment authenticates for you.
@@ -1265,6 +1283,24 @@ async function callDMApi(body){
     }
   }
 }
+async function callDMApi(body){
+  try{
+    return await attemptBothEndpoints(body);
+  }catch(err){
+    // Only auto-retry when BOTH attempts got no HTTP response at all (status: null on both) —
+    // that's the signature of a dropped connection, worth one quick retry rather than an
+    // HTTP error (401/429/etc), which won't fix itself by retrying.
+    const bothNoResponse = (err.debugAttempts||[]).length >= 2 && err.debugAttempts.every(a => a.status === null);
+    if(!bothNoResponse) throw err;
+    await new Promise(r => setTimeout(r, 1200));
+    try{
+      return await attemptBothEndpoints(body);
+    }catch(err2){
+      err2.debugAttempts = [...(err.debugAttempts||[]), { endpoint:'(retry)', status:null, detail:'retried once after connection drop, still failed' }, ...(err2.debugAttempts||[])];
+      throw err2;
+    }
+  }
+}
 async function sendAction(actionText, meta){
   meta = meta || {};
   if(!meta.skipPlayerBubble){
@@ -1313,7 +1349,7 @@ async function sendAction(actionText, meta){
       message: err.message,
       attempts: err.debugAttempts || null
     });
-    state.chat.push({ type:'note', text:`⚠️ DM connection failed — check Status → Debug Log for details.` });
+    state.chat.push({ type:'dm-error', text:`⚠️ DM connection failed — check Status → Debug Log for details.`, originalAction: actionText, originalMeta: meta });
   }
   state.loading = false;
   render();
