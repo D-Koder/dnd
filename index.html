@@ -67,6 +67,8 @@
   .status-strip .stats{ display:flex; gap:12px; flex-wrap:wrap; color:var(--cream-dim); letter-spacing:0.5px; }
   .status-strip .stats b{ color:var(--brass); font-weight:normal; }
   .status-strip .quest-row{ font-size:10px; color:var(--cream-dim); padding-left:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .player-hp-bar{ height:4px; background:var(--bg); border:1px solid var(--line); border-radius:2px; overflow:hidden; margin:2px 0 2px 32px; }
+  .player-hp-fill{ height:100%; background:var(--teal); transition:width .3s, background .3s; }
   .status-strip .quest-row b{ color:var(--brass); font-weight:normal; }
 
   /* ---- chat feed: console log, not messenger bubbles ---- */
@@ -247,7 +249,7 @@ function createDefaultState(){
   return {
     character: {
       name:'Raken', species:'Coralkin', klass:'Tech Mage Schemer',
-      hp:'Healthy', magicCharge:'stone',
+      hp:'Healthy', hpCurrent:20, hpMax:20, magicCharge:'stone',
       quest:'The Hum Job — Port Halloway hull, Anchor-7',
       inventory:['Relic-scanning kit','Rusted key (in pedestal)','Dormant egg-object (unpaired)'],
       equipped:['Modified focus-tool','Relic fragment (reactive)'],
@@ -314,6 +316,19 @@ function glyph(cls){ return `<svg class="glyph ${cls||''}"><use href="#glyph"/><
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s){ return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 
+function hpLabel(current, max){
+  if(current <= 0) return 'Down';
+  const pct = current / max;
+  if(pct > 0.7) return 'Healthy';
+  if(pct > 0.4) return 'Bruised';
+  if(pct > 0.15) return 'Hurt';
+  return 'Critical';
+}
+function applyHpDelta(delta){
+  const c = state.character;
+  c.hpCurrent = Math.max(0, Math.min(c.hpMax, c.hpCurrent + delta));
+  c.hp = hpLabel(c.hpCurrent, c.hpMax);
+}
 function magicMod(){
   if(state.character.magicCharge==='wet') return 3;
   if(state.character.magicCharge==='water' || state.character.magicCharge==='stone') return 2;
@@ -555,12 +570,13 @@ function render(){
       <div class="top-row">
         ${glyph()}
         <div class="stats">
-          <span>❤ <b>${state.character.hp}</b></span>
+          <span>❤ <b>${state.character.hpCurrent}/${state.character.hpMax} · ${state.character.hp}</b></span>
           <span>💧🪨 <b>${magicLabel()}</b></span>
           <span>🪙 <b>${state.character.coins}</b></span>
           <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
         </div>
       </div>
+      <div class="player-hp-bar"><div class="player-hp-fill" style="width:${Math.max(0,(state.character.hpCurrent/state.character.hpMax)*100)}%; background:${state.character.hp==='Healthy'?'var(--teal)':state.character.hp==='Bruised'?'var(--teal)':state.character.hp==='Hurt'?'var(--brass)':'var(--danger)'};"></div></div>
       <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
     </div>
     ${isChat ? `
@@ -886,7 +902,7 @@ function closeItemsGainedModal(){
 
 // ---- Edit character modal ----
 function openEditModal(){
-  state.modal = { kind:'edit', hp:state.character.hp, grounding:state.character.magicCharge, quest:state.character.quest };
+  state.modal = { kind:'edit', hpCurrent:state.character.hpCurrent, hpMax:state.character.hpMax, grounding:state.character.magicCharge, quest:state.character.quest };
   render();
 }
 function renderEditModal(){
@@ -896,7 +912,11 @@ function renderEditModal(){
       <h3>Edit Status</h3>
       <div class="field">
         <label>HP</label>
-        <select id="edit-hp">${['Healthy','Bruised','Hurt','Critical'].map(v=>`<option ${m.hp===v?'selected':''}>${v}</option>`).join('')}</select>
+        <div class="ref-row">
+          <input type="number" id="edit-hp-current" min="0" style="width:70px;" value="${m.hpCurrent}">
+          <span style="font-family:var(--mono); color:var(--cream-dim);">/</span>
+          <input type="number" id="edit-hp-max" min="1" style="width:70px;" value="${m.hpMax}">
+        </div>
       </div>
       <div class="field">
         <label>Magic Grounding</label>
@@ -917,7 +937,11 @@ function renderEditModal(){
 }
 function setEditGrounding(v){ state.modal.grounding = v; render(); }
 function saveEdit(){
-  state.character.hp = document.getElementById('edit-hp').value;
+  const hpMax = Math.max(1, parseInt(document.getElementById('edit-hp-max').value,10) || 1);
+  const hpCurrent = Math.max(0, Math.min(hpMax, parseInt(document.getElementById('edit-hp-current').value,10) || 0));
+  state.character.hpMax = hpMax;
+  state.character.hpCurrent = hpCurrent;
+  state.character.hp = hpLabel(hpCurrent, hpMax);
   state.character.magicCharge = state.modal.grounding;
   state.character.quest = document.getElementById('edit-quest').value;
   state.modal = null;
@@ -1091,7 +1115,13 @@ function renderStatusTab(){
     </div>
     <div class="status-field">
       <label>HP</label>
-      <select onchange="state.character.hp=this.value; render();">${['Healthy','Bruised','Hurt','Critical'].map(v=>`<option ${c.hp===v?'selected':''}>${v}</option>`).join('')}</select>
+      <div class="ref-row" style="margin-bottom:6px;">
+        <input type="number" min="0" style="width:70px;" value="${c.hpCurrent}" onchange="state.character.hpCurrent=Math.max(0,Math.min(state.character.hpMax,parseInt(this.value,10)||0)); state.character.hp=hpLabel(state.character.hpCurrent,state.character.hpMax); render();">
+        <span style="font-family:var(--mono); color:var(--cream-dim);">/</span>
+        <input type="number" min="1" style="width:70px;" value="${c.hpMax}" onchange="state.character.hpMax=Math.max(1,parseInt(this.value,10)||1); state.character.hpCurrent=Math.min(state.character.hpCurrent,state.character.hpMax); state.character.hp=hpLabel(state.character.hpCurrent,state.character.hpMax); render();">
+        <span style="font-family:var(--mono); color:var(--brass);">${c.hp}</span>
+      </div>
+      <div class="player-hp-bar" style="margin-left:0;"><div class="player-hp-fill" style="width:${Math.max(0,(c.hpCurrent/c.hpMax)*100)}%; background:${c.hp==='Healthy'||c.hp==='Bruised'?'var(--teal)':c.hp==='Hurt'?'var(--brass)':'var(--danger)'};"></div></div>
     </div>
     <div class="status-field">
       <label>Magic Grounding</label>
@@ -1268,6 +1298,7 @@ When a world-significant relic, artifact, or object of lasting importance comes 
 The first time the world's currency system comes up in any concrete way (coins named, a price stated, a market transaction), set world_bible_updates.currency to a short description of it (e.g. "Coppers and silver marks; a handful of coppers buys something small.") — this is a one-time reference fact, only update it again if something genuinely changes about how currency works, not on every purchase.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
+HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
 Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated.
 Magic reserve (character_status.magic_reserve): a small spendable pool, separate from the per-roll grounding modifier, representing the character's capacity for real magical effort. Set it to the new absolute value only when it changes — spend 1 or more on genuinely significant spellwork (not routine use of the grounding-based rolls), and it can be recovered through rest or time spent properly grounded. Leave it null on ordinary turns where nothing about it changed.
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
@@ -1323,10 +1354,10 @@ const DM_TOOL_SCHEMA = {
       narration:{type:"string"},
       companions:{ type:"array", items:{ type:"object", properties:{ name:{type:"string",enum:["Bex","Thrum"]}, line:{type:"string"} }, required:["name","line"] } },
       character_status:{ type:"object", properties:{
-        hp:{type:"string",enum:["Healthy","Bruised","Hurt","Critical"]},
+        hp_delta:{type:["number","null"]},
         coins_delta:{type:["number","null"]},
         magic_reserve:{type:["number","null"]}
-      }, required:["hp","coins_delta","magic_reserve"] },
+      }, required:["hp_delta","coins_delta","magic_reserve"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
         where_we_are:{type:"string"}
@@ -1798,7 +1829,7 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     return;
   }
 
-  if(d.character_status && d.character_status.hp) state.character.hp = d.character_status.hp;
+  if(d.character_status && d.character_status.hp_delta) applyHpDelta(d.character_status.hp_delta);
   if(d.character_status && d.character_status.coins_delta) state.character.coins = Math.max(0, state.character.coins + d.character_status.coins_delta);
   if(d.character_status && d.character_status.magic_reserve != null) state.character.magicReserve = Math.max(0, Math.min(state.character.magicReserveMax, d.character_status.magic_reserve));
   if(d.quest && d.quest.current) state.character.quest = d.quest.current;
@@ -1950,7 +1981,17 @@ function parseCharacterSheetMd(text){
   if(name) out.name = name;
   if(species) out.species = species;
   if(klass) out.klass = klass;
-  if(hp) out.hp = hp;
+  if(hp){
+    const numMatch = hp.match(/(\d+)\s*\/\s*(\d+)/);
+    if(numMatch){
+      out.hpCurrent = parseInt(numMatch[1],10);
+      out.hpMax = parseInt(numMatch[2],10);
+      out.hp = hpLabel(out.hpCurrent, out.hpMax);
+    } else if(['Healthy','Bruised','Hurt','Critical','Down'].includes(hp.trim())){
+      // Old word-only format (no numbers) — keep the label as-is, don't touch the numeric pool.
+      out.hp = hp.trim();
+    }
+  }
   if(grounding && groundingMap[grounding]) out.magicCharge = groundingMap[grounding];
   if(coinsLine){ const n = parseInt(coinsLine, 10); if(!isNaN(n)) out.coins = n; }
   if(reserveLine){ const m = reserveLine.match(/(\d+)\s*\/\s*(\d+)/); if(m){ out.magicReserve = parseInt(m[1],10); out.magicReserveMax = parseInt(m[2],10); } }
@@ -2052,7 +2093,7 @@ function buildFileContent(kind){
 - **Class:** ${c.klass}
 
 ## Current Status
-- **HP:** ${c.hp}
+- **HP:** ${c.hpCurrent}/${c.hpMax} (${c.hp})
 - **Magic Grounding:** ${magicLabel()}
 - **Coins:** ${c.coins} coils *(see world_bible.md → Currency)*
 - **Magic Reserve:** ${c.magicReserve}/${c.magicReserveMax}
@@ -2162,9 +2203,9 @@ function renderPreviewModal(m){
   const filename = FILE_NAMES[m.fileKind];
   const content = buildFileContent(m.fileKind);
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
-    <div class="sheet" style="max-width:560px;">
+    <div class="sheet" style="max-width:560px; max-height:85vh; overflow-y:auto; -webkit-overflow-scrolling:touch;">
       <h3>${filename}</h3>
-      <pre style="max-height:50vh; overflow-y:auto; white-space:pre-wrap; font-family:var(--mono); font-size:11px;
+      <pre style="white-space:pre-wrap; word-break:break-word; font-family:var(--mono); font-size:11px;
         line-height:1.6; color:var(--cream); background:var(--bg); border:1px solid var(--line);
         padding:12px; margin:0 0 14px; border-radius:2px;">${escHtml(content)}</pre>
       <div class="sheet-actions">
@@ -2236,10 +2277,14 @@ async function loadMapBackground(){
     const url = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search'
       + '&gsrsearch=' + encodeURIComponent(query) + '&gsrnamespace=6&gsrlimit=12'
       + '&prop=imageinfo&iiprop=url%7Cmime&iiurlwidth=1600&format=json&origin=*';
-    const controller = new AbortController();
-    const timeout = setTimeout(()=>controller.abort(), 5000);
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
+    // Note: deliberately not using AbortController/signal here — Claude.ai's artifact
+    // preview proxies fetch() through an internal message channel that can't structured-clone
+    // an AbortSignal, which throws "The object can not be cloned." Timeout via Promise.race
+    // instead, which works in both the preview sandbox and real deployment.
+    const res = await Promise.race([
+      fetch(url),
+      new Promise((_, reject) => setTimeout(()=>reject(new Error('map fetch timed out')), 5000))
+    ]);
     const data = await res.json();
     const pages = data.query && data.query.pages ? Object.values(data.query.pages) : [];
     const candidates = pages.map(p=>p.imageinfo && p.imageinfo[0]).filter(i=>i && i.mime && i.mime.indexOf('image/')===0 && i.mime.indexOf('svg')===-1);
