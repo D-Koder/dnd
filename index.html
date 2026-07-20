@@ -64,7 +64,7 @@
   }
   .status-strip .top-row{ display:flex; align-items:center; gap:12px; }
   .status-strip .glyph{ width:20px; height:20px; color:var(--brass); flex-shrink:0; }
-  .status-strip .stats{ display:flex; gap:16px; color:var(--cream-dim); letter-spacing:0.5px; white-space:nowrap; }
+  .status-strip .stats{ display:flex; gap:12px; flex-wrap:wrap; color:var(--cream-dim); letter-spacing:0.5px; }
   .status-strip .stats b{ color:var(--brass); font-weight:normal; }
   .status-strip .quest-row{ font-size:10px; color:var(--cream-dim); padding-left:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .status-strip .quest-row b{ color:var(--brass); font-weight:normal; }
@@ -251,7 +251,10 @@ function createDefaultState(){
       quest:'The Hum Job — Port Halloway hull, Anchor-7',
       inventory:['Relic-scanning kit','Rusted key (in pedestal)','Dormant egg-object (unpaired)'],
       equipped:['Modified focus-tool','Relic fragment (reactive)'],
-      itemInfo: {} // itemName -> description, populated as items are found/added
+      itemInfo: {}, // itemName -> description, populated as items are found/added
+      coins: 15, // in coils, the world's base currency unit — see world bible
+      magicReserve: 3,
+      magicReserveMax: 3, // spendable pool for significant spellwork, separate from the per-roll grounding modifier
     },
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
     chat: [],
@@ -554,6 +557,8 @@ function render(){
         <div class="stats">
           <span>❤ <b>${state.character.hp}</b></span>
           <span>💧🪨 <b>${magicLabel()}</b></span>
+          <span>🪙 <b>${state.character.coins}</b></span>
+          <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
         </div>
       </div>
       <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
@@ -1094,6 +1099,23 @@ function renderStatusTab(){
       <div class="flavor" style="margin-top:6px; font-size:12px;">Modifier: ${magicMod()>=0?'+':''}${magicMod()} to rolls right now.</div>
     </div>
     <div class="status-field">
+      <label>Coins</label>
+      <div style="font-family:var(--mono); font-size:14px; color:var(--brass);">🪙 ${c.coins} coils</div>
+    </div>
+    <div class="status-field">
+      <label>Magic Reserve</label>
+      <div style="font-family:var(--mono); font-size:14px; color:var(--violet);">✨ ${c.magicReserve} / ${c.magicReserveMax}</div>
+      <div class="flavor" style="margin-top:4px; font-size:12px;">Spent on significant spellwork, separate from the grounding modifier above. Recovers with rest or proper grounding.</div>
+    </div>
+    <div class="status-field">
+      <label>How Combat Works</label>
+      <div class="flavor" style="font-size:12px; line-height:1.7;">
+        Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).<br>
+        Hit damage = roll a d6.<br>
+        Grounding: Wet Earth +3 · On Water/Stone +2 · Ungrounded −2.
+      </div>
+    </div>
+    <div class="status-field">
       <label>Quest</label>
       <textarea rows="3" onchange="state.character.quest=this.value">${escHtml(c.quest)}</textarea>
     </div>
@@ -1237,14 +1259,17 @@ If the request has "is_resume": true, the player just reopened the session after
 Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
-Important distinction for inventory_updates.add: physically handling, holding up, showing, or inspecting an item — including mid-negotiation with a vendor, or picking something up just to examine it — is NOT the same as acquiring it. Only call add once ownership actually changes: a purchase is paid and agreed, a trade is finalized, a found object is kept for good. If the player is holding an item to negotiate over it, haggle, or show someone, just narrate that in prose and wait — don't add it to inventory until the transaction (or scene) actually resolves in the player's favor.
-When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent. Locations are smaller points of interest (a dock office, a market stall, a sealed hatch) — carry a short descriptive phrase, not just a bare name, since this list is the player's persistent reference, not just flavor text.
+Important distinction for inventory_updates.add and item_found: merely describing that an item exists in the scene — a vendor has it for sale, it's sitting in a pile, an NPC is holding it — is NOT the same as the player having it. Never call add or item_found in the same turn an item is first introduced, unless the player's action THAT turn is what caused them to actually receive it (they paid, it was handed to them, they already declared they're taking it). If you've just described something as available/present and the player hasn't chosen to acquire it yet, only narrate — leave inventory_updates and item_found untouched, and let the player's next action (buying it, taking it, asking its price) be what actually triggers the change, on a later turn.
+Also relevant here: physically handling, holding up, showing, or inspecting an item — including mid-negotiation with a vendor, or picking something up just to examine it — is NOT the same as acquiring it either. Only call add once ownership actually changes: a purchase is paid and agreed, a trade is finalized, a found object is kept for good. If the player is holding an item to negotiate over it, haggle, or show someone, just narrate that in prose and wait — don't add it to inventory until the transaction (or scene) actually resolves in the player's favor.
+When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent. Locations are smaller points of interest (a dock office, a market stall, a sealed hatch) — carry a short descriptive phrase, not just a bare name, since this list is the player's persistent reference, not just flavor text. Be selective with NPCs specifically: only log someone who matters to the main story, who the player will likely need to speak to or visit again, or who's clearly recurring — not every vendor, passerby, or one-line background character. Most NPCs the player meets should just stay in the narration and never touch world_bible_updates at all.
 When a whole settlement (town, village, city, kingdom, or outpost) is named or the player arrives somewhere new at that scale, add it to new_settlements with its type and a short description — this is distinct from smaller locations within it.
 World map notes (new_map_notes) exist purely to keep geography consistent, not to be read as prose — short factual entries like "Port Halloway sits on Veyrune's southern coast" or "The old temple ruins are two days' walk north of Port Halloway." Add one whenever you establish a new place's position or distance relative to somewhere already known, so you don't contradict it later. This is a growing reference map built from what's been explored, not a pre-planned world layout — don't invent geography the player hasn't discovered or been told about yet.
 When a world-significant relic, artifact, or object of lasting importance comes up (not the player's own carried items — those go through inventory_updates/item_found instead), add a short note to new_artifacts.
 The first time the world's currency system comes up in any concrete way (coins named, a price stated, a market transaction), set world_bible_updates.currency to a short description of it (e.g. "Coppers and silver marks; a handful of coppers buys something small.") — this is a one-time reference fact, only update it again if something genuinely changes about how currency works, not on every purchase.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
+Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated.
+Magic reserve (character_status.magic_reserve): a small spendable pool, separate from the per-roll grounding modifier, representing the character's capacity for real magical effort. Set it to the new absolute value only when it changes — spend 1 or more on genuinely significant spellwork (not routine use of the grounding-based rolls), and it can be recovered through rest or time spent properly grounded. Leave it null on ordinary turns where nothing about it changed.
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
 Voice consistency (important): this exact instruction set may be run by different underlying models on different turns, so tone must come from these rules, not from any one model's default style. Keep narration to 2-4 short, plain sentences — no flowery/purple prose, no rhetorical questions to the player, no excessive metaphor stacking. Bex's lines are short, sarcastic, one beat of a joke at most — never a paragraph. Thrum's lines are terse, deadpan, often under 10 words. Keep response_options short and concrete (under ~15 words each), same phrasing style every turn. If in doubt, err toward shorter and plainer — consistency matters more than any single clever line.
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
@@ -1297,7 +1322,11 @@ const DM_TOOL_SCHEMA = {
     properties:{
       narration:{type:"string"},
       companions:{ type:"array", items:{ type:"object", properties:{ name:{type:"string",enum:["Bex","Thrum"]}, line:{type:"string"} }, required:["name","line"] } },
-      character_status:{ type:"object", properties:{ hp:{type:"string",enum:["Healthy","Bruised","Hurt","Critical"]} }, required:["hp"] },
+      character_status:{ type:"object", properties:{
+        hp:{type:"string",enum:["Healthy","Bruised","Hurt","Critical"]},
+        coins_delta:{type:["number","null"]},
+        magic_reserve:{type:["number","null"]}
+      }, required:["hp","coins_delta","magic_reserve"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
         where_we_are:{type:"string"}
@@ -1770,6 +1799,8 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   }
 
   if(d.character_status && d.character_status.hp) state.character.hp = d.character_status.hp;
+  if(d.character_status && d.character_status.coins_delta) state.character.coins = Math.max(0, state.character.coins + d.character_status.coins_delta);
+  if(d.character_status && d.character_status.magic_reserve != null) state.character.magicReserve = Math.max(0, Math.min(state.character.magicReserveMax, d.character_status.magic_reserve));
   if(d.quest && d.quest.current) state.character.quest = d.quest.current;
   if(d.combat){
     if(d.combat.active){
@@ -1907,8 +1938,10 @@ function parseCharacterSheetMd(text){
     species = spOnly;
     if(!klass && rest) klass = rest;
   }
-  const hp = extractField(text, 'HP');
+  const hp = extractField(text, 'HP') || extractField(text, 'HP / condition') || extractField(text, 'HP/condition');
   const grounding = extractField(text, 'Magic Grounding');
+  const coinsLine = extractField(text, 'Coins');
+  const reserveLine = extractField(text, 'Magic Reserve');
   const quest = extractField(text, 'Quest');
   const equippedLine = extractField(text, 'Equipped');
   const invLine = extractField(text, 'Inventory');
@@ -1919,6 +1952,8 @@ function parseCharacterSheetMd(text){
   if(klass) out.klass = klass;
   if(hp) out.hp = hp;
   if(grounding && groundingMap[grounding]) out.magicCharge = groundingMap[grounding];
+  if(coinsLine){ const n = parseInt(coinsLine, 10); if(!isNaN(n)) out.coins = n; }
+  if(reserveLine){ const m = reserveLine.match(/(\d+)\s*\/\s*(\d+)/); if(m){ out.magicReserve = parseInt(m[1],10); out.magicReserveMax = parseInt(m[2],10); } }
   if(quest) out.quest = quest;
   if(equippedLine && !/^\(nothing\)$/i.test(equippedLine)) out.equipped = equippedLine.split(',').map(s=>s.trim()).filter(Boolean);
   if(invLine) out.inventory = invLine.split(',').map(s=>s.trim()).filter(Boolean);
@@ -2019,9 +2054,16 @@ function buildFileContent(kind){
 ## Current Status
 - **HP:** ${c.hp}
 - **Magic Grounding:** ${magicLabel()}
+- **Coins:** ${c.coins} coils
+- **Magic Reserve:** ${c.magicReserve}/${c.magicReserveMax}
 - **Quest:** ${c.quest}
 - **Equipped:** ${c.equipped.join(', ') || '(nothing)'}
 - **Inventory:** ${c.inventory.join(', ')}
+
+## How Combat Works
+- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
+- Hit damage = roll a d6.
+- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
 `;
   }
   if(kind === 'world_bible'){
