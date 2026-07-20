@@ -1201,6 +1201,7 @@ When a new location, faction, or named NPC is introduced, add it to world_bible_
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
+Voice consistency (important): this exact instruction set may be run by different underlying models on different turns, so tone must come from these rules, not from any one model's default style. Keep narration to 2-4 short, plain sentences — no flowery/purple prose, no rhetorical questions to the player, no excessive metaphor stacking. Bex's lines are short, sarcastic, one beat of a joke at most — never a paragraph. Thrum's lines are terse, deadpan, often under 10 words. Keep response_options short and concrete (under ~15 words each), same phrasing style every turn. If in doubt, err toward shorter and plainer — consistency matters more than any single clever line.
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
 }
 // Dynamic per-turn state — small, changes often, sent uncached every call.
@@ -1277,6 +1278,121 @@ const DM_TOOL_SCHEMA = {
   cache_control: { type: "ephemeral" } // this schema never changes — cache it instead of rebilling the full nested JSON every turn
 };
 
+// ---- Groq (OpenAI-compatible) — same schema/instructions as Claude, different wire format ----
+// Reusing DM_TOOL_SCHEMA.input_schema directly (not a separate hand-written copy) means any
+// future schema change automatically applies to both providers with no risk of drift.
+function buildGroqToolSchema(){
+  return {
+    type: "function",
+    function: {
+      name: "dm_response",
+      description: DM_TOOL_SCHEMA.description,
+      parameters: DM_TOOL_SCHEMA.input_schema
+    }
+  };
+}
+function toOpenAIMessages(anthropicStyleMessages){
+  // Anthropic messages use content:[{type:'text',text}]; OpenAI/Groq just want a plain string.
+  return anthropicStyleMessages.map(m => ({
+    role: m.role,
+    content: m.content.map(c=>c.text).join('\n')
+  }));
+}
+async function callGroqApi(systemText, openaiMessages, signal){
+  const res = await fetch("/api/groq", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      max_tokens: 800,
+      messages: [ { role:"system", content: systemText }, ...openaiMessages ],
+      tools: [ buildGroqToolSchema() ],
+      tool_choice: { type:"function", function:{ name:"dm_response" } }
+    }),
+    signal
+  });
+  if(!res.ok){
+    let bodyText=''; try{ bodyText=(await res.text()).slice(0,300); }catch(e){}
+    throw new Error(`Groq HTTP ${res.status}: ${bodyText || res.statusText}`);
+  }
+  const data = await res.json();
+  const msg = data.choices && data.choices[0] && data.choices[0].message;
+  const call = msg && msg.tool_calls && msg.tool_calls[0];
+  if(!call) throw new Error('No tool call returned from Groq');
+  let input;
+  try{ input = JSON.parse(call.function.arguments); }catch(e){ throw new Error('Groq returned malformed JSON'); }
+  return { input, usage: data.usage || {} };
+}
+// Fire Claude and Groq at the same time — first one back with a genuinely valid structured
+// response wins; the loser's result (if it arrives at all) is just ignored. If Groq isn't
+// configured (no GROQ_API_KEY on the server) it fails near-instantly and Claude wins by default,
+// so this degrades gracefully with zero setup required beyond adding the key.
+// Claude gets a 500ms head start, alone. If it responds within that window, Groq is never
+// called at all — this is the common case, and it means most turns only cost one API call,
+// not two. Groq only joins in if Claude is still pending once the grace period expires, and
+// from that point it's a genuine race: whichever finishes first wins, and the other gets
+// cancelled via AbortController (stops wasted work either way; may also reduce Anthropic
+// billing specifically, since Anthropic's endpoints are documented to support cancellation —
+// Groq's aren't, so cancelling it saves nothing there, but costs nothing to try either).
+const DM_RACE_GRACE_MS = 500;
+async function raceDMProviders(claudeBody, groqSystemText, groqMessages){
+  const claudeController = new AbortController();
+  const groqController = new AbortController();
+
+  const claudePromise = (async () => {
+    const data = await callDMApi(claudeBody, claudeController.signal);
+    const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
+    if(!toolUse) throw new Error('No structured response returned (Claude).');
+    return { input: toolUse.input, usage: data.usage||{}, provider:'claude' };
+  })();
+  // Prevent "unhandled rejection" noise if this loses the race later — we still read the
+  // real result via the variable below when it matters.
+  claudePromise.catch(()=>{});
+
+  let groqPromise = null;
+  function startGroq(){
+    if(groqPromise) return groqPromise;
+    groqPromise = callGroqApi(groqSystemText, groqMessages, groqController.signal).then(r => Object.assign(r, { provider:'groq' }));
+    groqPromise.catch(()=>{});
+    return groqPromise;
+  }
+
+  const graceExpired = new Promise(resolve => setTimeout(()=>resolve('grace-expired'), DM_RACE_GRACE_MS));
+  const firstSignal = await Promise.race([
+    claudePromise.then(r => ({ kind:'result', r })).catch(e => ({ kind:'error', e })),
+    graceExpired.then(() => ({ kind:'grace-expired' }))
+  ]);
+
+  if(firstSignal.kind === 'result'){
+    return firstSignal.r; // fast enough — Groq never touched, only one call made this turn
+  }
+  if(firstSignal.kind === 'error'){
+    // Claude already failed within the grace window — no reason to keep waiting, go to Groq now.
+    try{
+      return await startGroq();
+    }catch(groqErr){
+      throw new Error('Both providers failed: ' + firstSignal.e.message + ' | ' + groqErr.message);
+    }
+  }
+
+  // Grace period expired with Claude still pending — bring Groq in and race what's left.
+  startGroq();
+  return new Promise((resolve, reject) => {
+    let pending = 2;
+    const failures = [];
+    [claudePromise, groqPromise].forEach(p => {
+      p.then(result => {
+        if(result.provider === 'claude') groqController.abort(); else claudeController.abort();
+        resolve(result);
+      }).catch(err => {
+        pending--;
+        failures.push(err.message);
+        if(pending === 0) reject(new Error('Both providers failed: ' + failures.join(' | ')));
+      });
+    });
+  });
+}
+
 function buildStateSnapshot(){
   const c = state.character;
   return {
@@ -1330,7 +1446,7 @@ function logDebugEntry(entry){
   state.debugLog.unshift({ time: new Date().toLocaleTimeString(), ...entry });
   if(state.debugLog.length > 50) state.debugLog.length = 50;
 }
-async function attemptBothEndpoints(body){
+async function attemptBothEndpoints(body, signal){
   // /api/dm is the Vercel serverless proxy (keeps your API key server-side).
   // If it's not present — e.g. previewing this file inside Claude.ai's artifact panel —
   // fall back to calling Anthropic directly, which that environment authenticates for you.
@@ -1341,7 +1457,8 @@ async function attemptBothEndpoints(body){
     const res = await fetch("/api/dm", {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
     if(res.status === 404){
       attempts.push({ endpoint:'/api/dm', status:404, detail:'no proxy route present (expected when previewing outside Vercel)' });
@@ -1357,12 +1474,14 @@ async function attemptBothEndpoints(body){
     attempts.push({ endpoint:'/api/dm', status:res.status, detail:'ok' });
     return await res.json();
   }catch(e1){
+    if(e1.name === 'AbortError') throw e1;
     if(!attempts.length) attempts.push({ endpoint:'/api/dm', status:null, detail: e1.message || 'network error (fetch threw before a response)' });
     try{
       const res2 = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
         headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal
       });
       if(!res2.ok){
         let bodyText2 = ''; try{ bodyText2 = (await res2.text()).slice(0,400); }catch(e){}
@@ -1374,6 +1493,7 @@ async function attemptBothEndpoints(body){
       attempts.push({ endpoint:'api.anthropic.com (direct)', status:res2.status, detail:'ok' });
       return await res2.json();
     }catch(e2){
+      if(e2.name === 'AbortError') throw e2;
       if(!attempts.some(a=>a.endpoint.includes('anthropic.com'))){
         attempts.push({ endpoint:'api.anthropic.com (direct)', status:null, detail: e2.message || 'network error (fetch threw before a response)' });
       }
@@ -1475,10 +1595,11 @@ async function callDMApiStreaming(body, onNarrationDelta){
   if(!toolInputJson) throw new Error('no tool input received via stream');
   return { input: JSON.parse(toolInputJson), usage };
 }
-async function callDMApi(body){
+async function callDMApi(body, signal){
   try{
-    return await attemptBothEndpoints(body);
+    return await attemptBothEndpoints(body, signal);
   }catch(err){
+    if(err.name === 'AbortError') throw err; // intentional cancellation, not a connection drop — don't retry
     // Only auto-retry when BOTH attempts got no HTTP response at all (status: null on both) —
     // that's the signature of a dropped connection, worth one quick retry rather than an
     // HTTP error (401/429/etc), which won't fix itself by retrying.
@@ -1486,8 +1607,9 @@ async function callDMApi(body){
     if(!bothNoResponse) throw err;
     await new Promise(r => setTimeout(r, 1200));
     try{
-      return await attemptBothEndpoints(body);
+      return await attemptBothEndpoints(body, signal);
     }catch(err2){
+      if(err2.name === 'AbortError') throw err2;
       err2.debugAttempts = [...(err.debugAttempts||[]), { endpoint:'(retry)', status:null, detail:'retried once after connection drop, still failed' }, ...(err2.debugAttempts||[])];
       throw err2;
     }
@@ -1521,48 +1643,27 @@ async function sendAction(actionText, meta){
     tool_choice:{ type:"tool", name:"dm_response" },
     messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
   };
+  // Groq gets the identical instructions + history, just reformatted for its wire format —
+  // same source of truth as Claude, so tone shouldn't drift depending on who wins the race.
+  const groqSystemText = buildStaticInstructions() + '\n\n' + buildDynamicContext();
+  const groqMessages = toOpenAIMessages([...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]);
 
-  let streamingMsg = null;
   try{
     const startedAt = performance.now();
-    let toolInput, usage, streamed = false;
-    try{
-      // Streaming path: narration appears live as it's generated, via the /api/dm proxy only —
-      // if this isn't available (previewing outside Vercel) or fails for any reason, we fall
-      // straight back to the existing buffered call below with zero visible disruption.
-      streamingMsg = { type:'dm', text:'', companions:[], streaming:true };
-      state.chat.push(streamingMsg);
-      state.loading = false;
-      render();
-      const result = await callDMApiStreaming(requestBody, (partial)=>{ streamingMsg.text = partial; render(); });
-      toolInput = result.input;
-      usage = result.usage || {};
-      streamed = true;
-    }catch(streamErr){
-      const idx = state.chat.indexOf(streamingMsg);
-      if(idx>=0) state.chat.splice(idx,1);
-      streamingMsg = null;
-      state.loading = true;
-      render();
-      const data = await callDMApi(requestBody);
-      const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
-      if(!toolUse) throw new Error('No structured response returned.');
-      toolInput = toolUse.input;
-      usage = data.usage || {};
-    }
+    // Racing two providers can't be fairly combined with live streaming (there's no way to
+    // know which one will actually finish first until it does) — this trades the live-typing
+    // effect for genuinely picking whichever provider is fastest end-to-end this turn.
+    const result = await raceDMProviders(requestBody, groqSystemText, groqMessages);
     const elapsedMs = Math.round(performance.now() - startedAt);
+    const usage = result.usage || {};
     logDebugEntry({
       context: 'DM call timing',
       action: actionText,
-      message: `${elapsedMs}ms${streamed?' (streamed)':''} · in:${usage.input_tokens||'?'} out:${usage.output_tokens||'?'} cache_read:${usage.cache_read_input_tokens||0} cache_write:${usage.cache_creation_input_tokens||0}`,
+      message: `${elapsedMs}ms (won: ${result.provider}${elapsedMs < DM_RACE_GRACE_MS ? ', groq skipped' : ', groq engaged'}) · in:${usage.input_tokens||usage.prompt_tokens||'?'} out:${usage.output_tokens||usage.completion_tokens||'?'} cache_read:${usage.cache_read_input_tokens||0}`,
       attempts: null
     });
-    await applyDMResponse(toolInput, meta, actionText, streamingMsg);
+    await applyDMResponse(result.input, meta, actionText, null);
   }catch(err){
-    if(streamingMsg){
-      const idx = state.chat.indexOf(streamingMsg);
-      if(idx>=0) state.chat.splice(idx,1);
-    }
     logDebugEntry({
       context: 'DM API call',
       action: actionText,
