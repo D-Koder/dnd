@@ -411,9 +411,8 @@ async function bootSaveFiles(){
   let hasSave = false;
   await loadSettingsOnly();
 
-  // Try to restore the actual chat transcript first — if this device already has one,
-  // just show it back exactly as it was. No need to spend an API call regenerating an
-  // opening beat when nothing about the conversation was actually lost.
+  // Check for a local chat transcript — if present, this device has an in-progress
+  // session that should just continue exactly as it was, no fresh resume call needed.
   let restoredChat = null;
   try{
     const savedChat = await storageGet('veyrune:chat_transcript');
@@ -424,24 +423,19 @@ async function bootSaveFiles(){
   }catch(e){ /* fine, fall through to normal boot */ }
 
   try{
+    // Always load disk first as the baseline, then always overlay local storage on top,
+    // if any exists — local reflects whatever happened during play since, and wins for
+    // any field it has. Local storage is never written back to the actual ./saves files;
+    // it only updates in the browser until you manually export and redeploy.
     const fromDisk = await loadSaveFilesFromDisk();
-    if(fromDisk){
-      // Files placed in ./saves are the authoritative, most-current source — prefer a
-      // fresh resume beat over a possibly-stale local transcript when this happens.
-      restoredChat = null;
+    const fromStorage = await loadSaveFilesFromStorage();
+    hasSave = fromDisk || fromStorage;
+    if(hasSave) await persistSaveFiles(); // keep local storage in sync with the merged result
+    if(!restoredChat && hasSave){
       startNewSessionBoundary();
-      await persistSaveFiles();
-      resumeNote = '💾 Loaded save files from ./saves — continuing where you left off.';
-      hasSave = true;
-    } else {
-      const fromStorage = await loadSaveFilesFromStorage();
-      if(fromStorage){
-        hasSave = true;
-        if(!restoredChat){
-          startNewSessionBoundary();
-          resumeNote = '💾 Resumed from this device\'s saved progress.';
-        }
-      }
+      if(fromDisk && fromStorage) resumeNote = '💾 Loaded ./saves baseline, then this device\'s local progress on top of it.';
+      else if(fromStorage) resumeNote = '💾 Resumed from this device\'s saved progress.';
+      else resumeNote = '💾 Loaded save files from ./saves — continuing where you left off.';
     }
   }catch(e){
     console.warn('Could not load saved files, starting fresh:', e);
