@@ -97,6 +97,7 @@
     border-left:2px solid var(--brass); padding-left:10px; margin-top:6px;
   }
   .msg-roll .speaker-tag{ margin-right:6px; }
+  .provider-tag{ font-family:var(--mono); font-size:9px; color:var(--cream-dim); opacity:0.55; margin-right:8px; letter-spacing:0.5px; text-transform:uppercase; }
   .msg-longpress{ cursor:pointer; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .msg-note{ font-family:var(--mono); font-size:11px; color:var(--cream-dim); font-style:italic; margin-top:6px; }
   .msg-ooc{
@@ -264,9 +265,19 @@ function createDefaultState(){
     spells: { level:0, results:[], status:'' },
     worldBible: {
       setting: 'Veyrune — old magic and crashed spaceship tech mashed together a few centuries ago.',
-      locations: ["Port Halloway — starting town, a scrappy trade hub built around a crashed sky-ship's hull."],
+      locations: ["Port Halloway's dock office — Old Corr's post, heart of the town's daily business.", "The sealed lower deck — beneath Port Halloway, inside the crashed hull."],
+      settlements: [
+        { name:'Port Halloway', type:'town', notes:"Starting town. A scrappy trade hub built around a crashed sky-ship's hull. Bar, market, guild board." }
+      ],
       factions: [],
       npcs: [],
+      currency: '', // the world's currency system, once established — reference source of truth
+      map: [], // relational/directional notes only, for consistency — not a visual map. e.g. "Port Halloway sits on the southern coast."
+      artifacts: [], // world-significant relics/objects (not the player's personal inventory)
+      rules: [
+        '"Magic" and "tech" are the same thing, just different vocabulary — old-world scientists and old-world wizards were arguing about the same stuff.',
+        "Nothing here needs to be taken too seriously. If it's funnier the weird way, go with funnier."
+      ],
     },
     party: {
       bex: "Bex — Overconfident Rogue-Mechanic. Sarcastic, loyal underneath it, secretly worried she's not as good as she brags. Names all her gadgets.",
@@ -285,6 +296,8 @@ function createDefaultState(){
       permadeath: false,
       difficulty: 'medium', // 'easy' | 'medium' | 'hard' | 'deadly'
       fastMode: false, // true = Haiku (faster, simpler prose), false = Sonnet (slower, sharper writing)
+      writingStyle: 'standard', // 'standard' | 'simple'
+      focus: 'balanced', // 'balanced' | 'worldbuilding' | 'character'
     },
     debugLog: [],
     pendingItemClaim: null, // { kind:'item'|'items-gained', ... } — composer becomes a Claim button until this is opened/resolved
@@ -588,11 +601,12 @@ function renderTabPanel(){
 
 function renderChatItem(m, i){
   if(m.type==='dm'){
+    const providerTag = m.provider ? `<span class="provider-tag">· ${m.provider}</span>` : '';
     if(m.isOOC){
-      return `<div class="msg-dm-ooc"><span class="speaker-tag">[DM · OOC]</span>${escHtml(m.text)}</div>`;
+      return `<div class="msg-dm-ooc"><span class="speaker-tag">[DM · OOC]</span>${providerTag}${escHtml(m.text)}</div>`;
     }
     const divider = i>0 ? `<div class="turn-divider">${glyph()}<div class="line"></div></div>` : '';
-    return `${divider}<div class="msg-dm${m.streaming?' streaming-text':''}"><span class="speaker-tag">[DM]</span>${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
+    return `${divider}<div class="msg-dm${m.streaming?' streaming-text':''}"><span class="speaker-tag">[DM]</span>${providerTag}${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
   }
   if(m.type==='player') return `<div class="msg-player msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
   if(m.type==='player-ooc') return `<div class="msg-player-ooc msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU · OOC]</span>${escHtml(m.text)}</div>`;
@@ -1085,7 +1099,11 @@ function renderStatusTab(){
     </div>
     <div class="subhead">World Bible</div>
     <div class="ref-card">
-      <div class="rc-meta"><b style="color:var(--brass)">Locations:</b> ${state.worldBible.locations.map(escHtml).join(' · ') || '(none yet)'}</div>
+      <div class="rc-meta"><b style="color:var(--brass)">Currency:</b> ${escHtml(state.worldBible.currency) || '(not established yet)'}</div>
+      <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">Settlements:</b> ${state.worldBible.settlements.map(s=>escHtml(`${s.name} (${s.type})`)).join(' · ') || '(none yet)'}</div>
+      <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">Locations:</b> ${state.worldBible.locations.map(escHtml).join(' · ') || '(none yet)'}</div>
+      <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">Map Notes:</b> ${state.worldBible.map.map(escHtml).join(' · ') || '(none yet)'}</div>
+      <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">Artifacts:</b> ${state.worldBible.artifacts.map(escHtml).join(' · ') || '(none yet)'}</div>
       <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">Factions:</b> ${state.worldBible.factions.map(escHtml).join(' · ') || '(none yet)'}</div>
       <div class="rc-meta" style="margin-top:6px;"><b style="color:var(--brass)">NPCs:</b> ${state.worldBible.npcs.map(escHtml).join(' · ') || '(none yet)'}</div>
     </div>
@@ -1141,6 +1159,27 @@ function renderStatusTab(){
       </div>
       <div class="flavor" style="margin-top:6px; font-size:12px;">${state.settings.fastMode ? 'Haiku — quicker replies, simpler prose.' : 'Sonnet — slower, sharper writing and judgment.'}</div>
     </div>
+    <div class="status-field">
+      <label>Writing Style</label>
+      <div class="charge-btns">
+        <button class="${state.settings.writingStyle==='standard'?'active':''}" onclick="setWritingStyle('standard')">Standard</button>
+        <button class="${state.settings.writingStyle==='simple'?'active':''}" onclick="setWritingStyle('simple')">Simple English</button>
+      </div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">${state.settings.writingStyle==='simple' ? 'Short sentences, common everyday words, minimal jargon.' : 'Normal vocabulary and sentence complexity.'}</div>
+    </div>
+    <div class="status-field">
+      <label>Narrative Focus</label>
+      <div class="charge-btns">
+        <button class="${state.settings.focus==='balanced'?'active':''}" onclick="setFocus('balanced')">Balanced</button>
+        <button class="${state.settings.focus==='worldbuilding'?'active':''}" onclick="setFocus('worldbuilding')">World-building</button>
+        <button class="${state.settings.focus==='character'?'active':''}" onclick="setFocus('character')">Character</button>
+      </div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">${
+        state.settings.focus==='worldbuilding' ? 'More environment, lore, and setting detail; less internal/emotional beats.' :
+        state.settings.focus==='character' ? 'More companion dialogue, reactions, and relationship beats; lighter on setting description.' :
+        'Even mix of setting detail and character/relationship beats.'
+      }</div>
+    </div>
     <div class="subhead">Debug</div>
     <button class="pill-btn" onclick="openDebugLog()">🐞 Debug Log ${state.debugLog.length ? `(${state.debugLog.length})` : ''}</button>
     <div class="subhead" style="color:var(--danger);">Danger Zone</div>
@@ -1150,6 +1189,8 @@ function renderStatusTab(){
 function setPermadeath(val){ state.settings.permadeath = val; persistSettings(); render(); }
 function setDifficulty(val){ state.settings.difficulty = val; persistSettings(); render(); }
 function setFastMode(val){ state.settings.fastMode = val; persistSettings(); render(); }
+function setWritingStyle(val){ state.settings.writingStyle = val; persistSettings(); render(); }
+function setFocus(val){ state.settings.focus = val; persistSettings(); render(); }
 function openDebugLog(){ state.modal = { kind:'debug-log' }; render(); }
 function renderDebugLogModal(){
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
@@ -1197,7 +1238,11 @@ Validity check: before narrating an action forward, ask whether it's actually po
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
 Important distinction for inventory_updates.add: physically handling, holding up, showing, or inspecting an item — including mid-negotiation with a vendor, or picking something up just to examine it — is NOT the same as acquiring it. Only call add once ownership actually changes: a purchase is paid and agreed, a trade is finalized, a found object is kept for good. If the player is holding an item to negotiate over it, haggle, or show someone, just narrate that in prose and wait — don't add it to inventory until the transaction (or scene) actually resolves in the player's favor.
-When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent.
+When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent. Locations are smaller points of interest (a dock office, a market stall, a sealed hatch) — carry a short descriptive phrase, not just a bare name, since this list is the player's persistent reference, not just flavor text.
+When a whole settlement (town, village, city, kingdom, or outpost) is named or the player arrives somewhere new at that scale, add it to new_settlements with its type and a short description — this is distinct from smaller locations within it.
+World map notes (new_map_notes) exist purely to keep geography consistent, not to be read as prose — short factual entries like "Port Halloway sits on Veyrune's southern coast" or "The old temple ruins are two days' walk north of Port Halloway." Add one whenever you establish a new place's position or distance relative to somewhere already known, so you don't contradict it later. This is a growing reference map built from what's been explored, not a pre-planned world layout — don't invent geography the player hasn't discovered or been told about yet.
+When a world-significant relic, artifact, or object of lasting importance comes up (not the player's own carried items — those go through inventory_updates/item_found instead), add a short note to new_artifacts.
+The first time the world's currency system comes up in any concrete way (coins named, a price stated, a market transaction), set world_bible_updates.currency to a short description of it (e.g. "Coppers and silver marks; a handful of coppers buys something small.") — this is a one-time reference fact, only update it again if something genuinely changes about how currency works, not on every purchase.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
@@ -1212,9 +1257,14 @@ ${JSON.stringify(state.character)}
 
 WORLD BIBLE:
 Setting: ${wb.setting}
+Settlements: ${wb.settlements.map(s=>`${s.name} (${s.type}) — ${s.notes}`).join(' | ') || '(none yet)'}
 Locations: ${wb.locations.join(' | ') || '(none yet)'}
 Factions: ${wb.factions.join(' | ') || '(none yet)'}
 NPCs: ${wb.npcs.join(' | ') || '(none yet)'}
+Map notes (consistency reference only): ${wb.map.join(' | ') || '(none yet)'}
+Notable artifacts: ${wb.artifacts.join(' | ') || '(none yet)'}
+Currency: ${wb.currency || '(not established yet)'}
+World rules: ${wb.rules.join(' | ')}
 
 PARTY:
 Bex — ${state.party.bex}
@@ -1230,7 +1280,13 @@ Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
 SETTINGS:
 Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
-Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.`;
+Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.
+Writing style: ${state.settings.writingStyle==='simple' ? 'SIMPLE ENGLISH — short sentences, common everyday words, avoid jargon and complex/compound sentence structure. Still evocative, just plainer.' : 'Standard — normal vocabulary and sentence complexity, no restriction.'}
+Narrative focus: ${
+  state.settings.focus==='worldbuilding' ? 'WORLD-BUILDING — lean into environment, lore, sensory setting detail, and how this world works. Keep companion dialogue lighter/shorter than usual.' :
+  state.settings.focus==='character' ? 'CHARACTER-FOCUSED — lean into companion dialogue, reactions, relationship dynamics, and the player character\'s internal stakes. Keep environment/setting description lighter than usual.' :
+  'Balanced — roughly even mix of setting detail and character/relationship beats, no strong lean either way.'
+}`;
 }
 
 const DM_TOOL_SCHEMA = {
@@ -1248,9 +1304,15 @@ const DM_TOOL_SCHEMA = {
       }, required:["where_we_are"] },
       world_bible_updates:{ type:"object", properties:{
         new_locations:{type:"array",items:{type:"string"}},
+        new_settlements:{type:"array",items:{ type:"object", properties:{
+          name:{type:"string"}, type:{type:"string",enum:["town","village","city","kingdom","outpost","other"]}, notes:{type:"string"}
+        }, required:["name","type","notes"] }},
         new_factions:{type:"array",items:{type:"string"}},
-        new_npcs:{type:"array",items:{type:"string"}}
-      }, required:["new_locations","new_factions","new_npcs"] },
+        new_npcs:{type:"array",items:{type:"string"}},
+        new_map_notes:{type:"array",items:{type:"string"}},
+        new_artifacts:{type:"array",items:{type:"string"}},
+        currency:{type:["string","null"]}
+      }, required:["new_locations","new_settlements","new_factions","new_npcs","new_map_notes","new_artifacts","currency"] },
       party_updates:{ type:"object", properties:{
         bex_note:{type:["string","null"]},
         thrum_note:{type:["string","null"]},
@@ -1662,7 +1724,7 @@ async function sendAction(actionText, meta){
       message: `${elapsedMs}ms (won: ${result.provider}${elapsedMs < DM_RACE_GRACE_MS ? ', groq skipped' : ', groq engaged'}) · in:${usage.input_tokens||usage.prompt_tokens||'?'} out:${usage.output_tokens||usage.completion_tokens||'?'} cache_read:${usage.cache_read_input_tokens||0}`,
       attempts: null
     });
-    await applyDMResponse(result.input, meta, actionText, null);
+    await applyDMResponse(result.input, meta, actionText, null, result.provider);
   }catch(err){
     logDebugEntry({
       context: 'DM API call',
@@ -1675,7 +1737,7 @@ async function sendAction(actionText, meta){
   state.loading = false;
   render();
 }
-async function applyDMResponse(d, meta, originalActionText, existingMsgRef){
+async function applyDMResponse(d, meta, originalActionText, existingMsgRef, provider){
   meta = meta || {};
 
   // Invalid-action check: the DM decided the described action isn't actually possible
@@ -1695,8 +1757,9 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef){
     existingMsgRef.companions = meta.isOOC ? [] : (d.companions||[]);
     existingMsgRef.isOOC = !!meta.isOOC;
     existingMsgRef.streaming = false;
+    existingMsgRef.provider = provider;
   } else {
-    state.chat.push({ type:'dm', text:d.narration, companions: meta.isOOC ? [] : (d.companions||[]), isOOC: !!meta.isOOC });
+    state.chat.push({ type:'dm', text:d.narration, companions: meta.isOOC ? [] : (d.companions||[]), isOOC: !!meta.isOOC, provider });
   }
   state.lastOptions = d.response_options || [];
 
@@ -1725,8 +1788,17 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef){
   if(d.world_bible_updates){
     const wb = state.worldBible;
     (d.world_bible_updates.new_locations||[]).forEach(l=>{ if(!wb.locations.includes(l)){ wb.locations.push(l); worldBibleChanged = true; } });
+    (d.world_bible_updates.new_settlements||[]).forEach(s=>{
+      if(!wb.settlements.some(existing=>existing.name===s.name)){ wb.settlements.push(s); worldBibleChanged = true; }
+    });
     (d.world_bible_updates.new_factions||[]).forEach(f=>{ if(!wb.factions.includes(f)){ wb.factions.push(f); worldBibleChanged = true; } });
     (d.world_bible_updates.new_npcs||[]).forEach(n=>{ if(!wb.npcs.includes(n)){ wb.npcs.push(n); worldBibleChanged = true; } });
+    (d.world_bible_updates.new_map_notes||[]).forEach(m=>{ if(!wb.map.includes(m)){ wb.map.push(m); worldBibleChanged = true; } });
+    (d.world_bible_updates.new_artifacts||[]).forEach(a=>{ if(!wb.artifacts.includes(a)){ wb.artifacts.push(a); worldBibleChanged = true; } });
+    if(d.world_bible_updates.currency && d.world_bible_updates.currency !== wb.currency){
+      wb.currency = d.world_bible_updates.currency;
+      worldBibleChanged = true;
+    }
   }
 
   let partyChanged = false;
@@ -1853,11 +1925,22 @@ function parseCharacterSheetMd(text){
   return out;
 }
 function parseWorldBibleMd(text){
-  return {
+  const currency = extractSection(text, 'Currency');
+  const settlementsRaw = extractListItems(extractSection(text, 'Settlements'));
+  const settlements = settlementsRaw.map(line=>{
+    const m = line.match(/^\*\*(.+?)\*\*\s*\((.+?)\)\s*—\s*(.*)$/);
+    return m ? { name:m[1].trim(), type:m[2].trim(), notes:m[3].trim() } : { name:line, type:'other', notes:'' };
+  }).filter(s=>s.name);
+  const out = {
     locations: extractListItems(extractSection(text, 'Known Locations')),
     factions: extractListItems(extractSection(text, 'Factions')),
     npcs: extractListItems(extractSection(text, 'Key NPCs')),
+    map: extractListItems(extractSection(text, 'Map Notes')),
+    artifacts: extractListItems(extractSection(text, 'Notable Artifacts')),
   };
+  if(settlements.length) out.settlements = settlements;
+  if(currency && !/^\(not established/i.test(currency)) out.currency = currency;
+  return out;
 }
 function parsePartyMd(text){
   const bex = extractSection(text, 'Bex');
@@ -1944,17 +2027,38 @@ function buildFileContent(kind){
   if(kind === 'world_bible'){
     return `# World Bible
 
+*This file is the persistent memory of the world. Update it as new places/factions/NPCs matter.*
+
 ## The Setting
 ${wb.setting}
 
+## Currency
+${wb.currency || '(not established yet)'}
+
+## Settlements
+${wb.settlements.map(s=>`- **${s.name}** (${s.type}) — ${s.notes}`).join('\n') || '- (none yet)'}
+
 ## Known Locations
 ${wb.locations.map(l=>'- '+l).join('\n') || '- (none yet)'}
+
+## Map Notes
+*Relational/directional notes only, for consistency — not a visual map. Grows as the world is explored.*
+${wb.map.map(m=>'- '+m).join('\n') || '- (none yet)'}
+
+## Notable Artifacts
+${wb.artifacts.map(a=>'- '+a).join('\n') || '- (none yet)'}
 
 ## Factions
 ${wb.factions.map(f=>'- '+f).join('\n') || '- (none yet)'}
 
 ## Key NPCs
 ${wb.npcs.map(n=>'- '+n).join('\n') || '- (none yet)'}
+
+## Ongoing Threads / Mysteries
+${state.sessionMeta.openThreads.map(t=>'- '+t).join('\n') || '- (none yet)'}
+
+## Rules of This World
+${wb.rules.map(r=>'- '+r).join('\n')}
 `;
   }
   if(kind === 'party'){
