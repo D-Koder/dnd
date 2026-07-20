@@ -2054,16 +2054,13 @@ function buildFileContent(kind){
 ## Current Status
 - **HP:** ${c.hp}
 - **Magic Grounding:** ${magicLabel()}
-- **Coins:** ${c.coins} coils
+- **Coins:** ${c.coins} coils *(see world_bible.md → Currency)*
 - **Magic Reserve:** ${c.magicReserve}/${c.magicReserveMax}
-- **Quest:** ${c.quest}
+- **Quest:** ${c.quest} *(full detail in session_log.md → Current Quest / Hook)*
 - **Equipped:** ${c.equipped.join(', ') || '(nothing)'}
 - **Inventory:** ${c.inventory.join(', ')}
 
-## How Combat Works
-- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
-- Hit damage = roll a d6.
-- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
+*Combat mechanics live in world_bible.md → Rules of This World, since they apply to the world/system, not just this character.*
 `;
   }
   if(kind === 'world_bible'){
@@ -2101,6 +2098,11 @@ ${state.sessionMeta.openThreads.map(t=>'- '+t).join('\n') || '- (none yet)'}
 
 ## Rules of This World
 ${wb.rules.map(r=>'- '+r).join('\n')}
+
+### How Combat Works
+- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
+- Hit damage = roll a d6.
+- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
 `;
   }
   if(kind === 'party'){
@@ -2140,7 +2142,7 @@ ${state.sessionMeta.recentEvents.map(s=>'- '+s).join('\n') || '- (none yet)'}
 ${state.sessionMeta.openThreads.map(s=>'- '+s).join('\n') || '- (none yet)'}
 
 ## Party Status
-- **${c.name}:** ${c.hp}. Holding: ${c.inventory.join(', ') || '(nothing)'}.
+- **${c.name}:** ${c.hp} *(full inventory/coins/magic reserve in character_sheet.md)*
 - **Bex:** ${state.party.bexStatus}
 - **Thrum:** ${state.party.thrumStatus}
 ${state.worldBible.npcs.map(n=>'- **NPC:** '+n).join('\n')}
