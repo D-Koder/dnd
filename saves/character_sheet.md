@@ -12,14 +12,9 @@
 - **Starting gear:** A modified focus-tool (your own homebrew tweaks on it), a basic relic-scanning kit, and one personal item — a broken/inert relic piece you've never been able to identify (yet).
 
 ## Current Status (DM updates this as things happen)
-- **HP / condition:** Healthy
-- **Coins:** 15 coils *(the world's base currency unit — see world_bible.md)*
-- **Magic Reserve:** 3/3 *(spent on significant spellwork, separate from the grounding modifier below; recovers with rest or proper grounding)*
-- **Notable items:** Unidentified relic fragment (starting item — mystery hook)
-- **Relationships:** Bex (new, already vibing over shared gadget-nerdery), Thrum (new)
+- **HP:** 20/20 (Healthy)
+- **Coins:** 15 coils *(currency system detailed in world_bible.md → Currency)*
+- **Magic Reserve:** 3/3 *(spent on significant spellwork, separate from the grounding modifier; recovers with rest or proper grounding — combat/rolls detailed in world_bible.md → Rules of This World)*
+- **Notable items:** Unidentified relic fragment — starting item, mystery hook *(full lore in world_bible.md → Notable Artifacts, once it's established there)*
+- **Relationships:** Bex (new, already vibing over shared gadget-nerdery), Thrum (new) *(full bios in party.md)*
 - **Reputation/known-for:** Not yet — story hasn't started
-
-## How Combat Works
-- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
-- Hit damage = roll a d6.
-- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
