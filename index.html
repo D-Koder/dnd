@@ -142,6 +142,15 @@
   }
   .icon-btn:hover{ border-color:var(--teal); color:var(--teal); }
   .icon-btn.send{ background:var(--brass-dim); border-color:var(--brass); color:var(--cream); font-family:var(--mono); font-size:11px; letter-spacing:1.5px; width:auto; padding:0 14px; }
+  .claim-item-btn{
+    flex:1; background:var(--brass-dim); border:1px solid var(--brass); color:var(--cream);
+    font-family:var(--mono); font-size:13px; letter-spacing:0.5px; padding:12px 10px;
+    border-radius:2px; cursor:pointer; animation:claimPulse 1.6s ease-in-out infinite;
+  }
+  .claim-item-btn:hover{ background:var(--brass); }
+  @keyframes claimPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(201,112,74,0.35); } 50%{ box-shadow:0 0 0 6px rgba(201,112,74,0); } }
+  .msg-dm.streaming-text::after{ content:'▌'; opacity:0.6; animation:blink 0.9s steps(1) infinite; margin-left:1px; }
+  @keyframes blink{ 50%{ opacity:0; } }
   .icon-btn.ooc-toggle{ width:auto; padding:0 10px; font-family:var(--mono); font-size:10px; letter-spacing:1px; }
   .icon-btn.ooc-toggle.active{ background:rgba(139,107,184,0.18); border-color:var(--violet); color:var(--violet); }
   .composer.ooc-active{ border-top-color:var(--violet); background:rgba(139,107,184,0.06); }
@@ -278,6 +287,7 @@ function createDefaultState(){
       fastMode: false, // true = Haiku (faster, simpler prose), false = Sonnet (slower, sharper writing)
     },
     debugLog: [],
+    pendingItemClaim: null, // { kind:'item'|'items-gained', ... } — composer becomes a Claim button until this is opened/resolved
     filesLoaded: false,
   };
 }
@@ -327,9 +337,11 @@ async function resetCampaign(){
     storageDelete('veyrune:world_bible'),
     storageDelete('veyrune:party'),
     storageDelete('veyrune:session_log'),
+    storageDelete('veyrune:chat_transcript'),
   ]);
   Object.assign(state, createDefaultState());
   state.booting = false;
+  state.filesLoaded = true;
   state.chat = [{ type:'dm', text:"You're deep in Port Halloway's sealed lower deck. The hum is louder here — and something in the dark just shifted.", companions:[] }];
   render();
 }
@@ -398,9 +410,25 @@ async function bootSaveFiles(){
   let resumeNote = null;
   let hasSave = false;
   await loadSettingsOnly();
+
+  // Try to restore the actual chat transcript first — if this device already has one,
+  // just show it back exactly as it was. No need to spend an API call regenerating an
+  // opening beat when nothing about the conversation was actually lost.
+  let restoredChat = null;
+  try{
+    const savedChat = await storageGet('veyrune:chat_transcript');
+    if(savedChat){
+      const parsed = JSON.parse(savedChat);
+      if(Array.isArray(parsed) && parsed.length) restoredChat = parsed;
+    }
+  }catch(e){ /* fine, fall through to normal boot */ }
+
   try{
     const fromDisk = await loadSaveFilesFromDisk();
     if(fromDisk){
+      // Files placed in ./saves are the authoritative, most-current source — prefer a
+      // fresh resume beat over a possibly-stale local transcript when this happens.
+      restoredChat = null;
       startNewSessionBoundary();
       await persistSaveFiles();
       resumeNote = '💾 Loaded save files from ./saves — continuing where you left off.';
@@ -408,9 +436,11 @@ async function bootSaveFiles(){
     } else {
       const fromStorage = await loadSaveFilesFromStorage();
       if(fromStorage){
-        startNewSessionBoundary();
-        resumeNote = '💾 Resumed from this device\'s saved progress.';
         hasSave = true;
+        if(!restoredChat){
+          startNewSessionBoundary();
+          resumeNote = '💾 Resumed from this device\'s saved progress.';
+        }
       }
     }
   }catch(e){
@@ -418,6 +448,13 @@ async function bootSaveFiles(){
   }
   state.filesLoaded = true;
   state.booting = false;
+
+  if(restoredChat){
+    state.chat = restoredChat;
+    state.chat.push({ type:'note', text:'💾 Restored previous conversation.' });
+    render();
+    return;
+  }
 
   if(hasSave){
     state.chat.push({ type:'note', text: resumeNote });
@@ -456,12 +493,23 @@ function magicLabel(){
 }
 function rollDie(sides){ return Math.floor(Math.random()*sides)+1; }
 
+let chatPersistTimer = null;
+function scheduleChatPersist(){
+  // Debounced — render() fires very often during streaming (once per character), so this
+  // coalesces rapid updates into a single storage write ~600ms after things settle down.
+  if(chatPersistTimer) clearTimeout(chatPersistTimer);
+  chatPersistTimer = setTimeout(()=>{
+    storageSet('veyrune:chat_transcript', JSON.stringify(state.chat.slice(-200)));
+  }, 600);
+}
+
 // ============================================================
 // RENDER — SHELL
 // ============================================================
 function render(){
   const app = document.getElementById('app');
   const isChat = state.tab === 'chat';
+  if(state.filesLoaded) scheduleChatPersist();
   app.innerHTML = `
     <div class="status-strip" onclick="openEditModal()">
       <div class="top-row">
@@ -481,10 +529,16 @@ function render(){
       ${state.combat.active ? renderEnemyStrip() : ''}
       ${state.lastOptions.length && !state.loading ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
       <div class="composer ${state.oocMode ? 'ooc-active' : ''}">
-        <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting?'disabled':''}>⚄</button>
-        <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting?'disabled':''}>OOC</button>
-        <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':(state.oocMode?'Ask the DM (OOC)…':'What do you do?')}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting?'disabled':''}>
-        <button class="icon-btn send" title="Send" onclick="submitFreeform()" ${state.booting?'disabled':''}>SEND</button>
+        ${state.pendingItemClaim ? `
+          <button class="claim-item-btn" onclick="openPendingItemClaim()">
+            ${state.pendingItemClaim.kind==='item' ? '🎁 Claim Item: '+escHtml(state.pendingItemClaim.item.name) : '🎒 Claim '+state.pendingItemClaim.items.length+' Item'+(state.pendingItemClaim.items.length>1?'s':'')}
+          </button>
+        ` : `
+          <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting?'disabled':''}>⚄</button>
+          <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting?'disabled':''}>OOC</button>
+          <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':(state.oocMode?'Ask the DM (OOC)…':'What do you do?')}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting?'disabled':''}>
+          <button class="icon-btn send" title="Send" onclick="submitFreeform()" ${state.booting?'disabled':''}>SEND</button>
+        `}
       </div>
     ` : `<div class="tab-panel">${renderTabPanel()}</div>`}
     <div class="tab-bar">
@@ -514,7 +568,7 @@ function renderChatItem(m, i){
       return `<div class="msg-dm-ooc"><span class="speaker-tag">[DM · OOC]</span>${escHtml(m.text)}</div>`;
     }
     const divider = i>0 ? `<div class="turn-divider">${glyph()}<div class="line"></div></div>` : '';
-    return `${divider}<div class="msg-dm"><span class="speaker-tag">[DM]</span>${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
+    return `${divider}<div class="msg-dm${m.streaming?' streaming-text':''}"><span class="speaker-tag">[DM]</span>${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
   }
   if(m.type==='player') return `<div class="msg-player msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
   if(m.type==='player-ooc') return `<div class="msg-player-ooc msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU · OOC]</span>${escHtml(m.text)}</div>`;
@@ -723,6 +777,11 @@ function confirmRoll(){
   }
 }
 
+function openPendingItemClaim(){
+  if(!state.pendingItemClaim) return;
+  state.modal = state.pendingItemClaim;
+  render();
+}
 // ---- Item modal ----
 function renderItemModal(m){
   return `<div class="overlay">
@@ -746,12 +805,13 @@ function resolveItem(keep){
     state.chat.push({ type:'note', text:`Left behind: ${item.name}` });
   }
   state.modal = null;
+  state.pendingItemClaim = null;
   render();
 }
 
 // ---- Items gained (already added, just informational) ----
 function renderItemsGainedModal(m){
-  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+  return `<div class="overlay" onclick="if(event.target===this) closeItemsGainedModal()">
     <div class="sheet">
       <h3>${m.items.length > 1 ? 'Items Gained' : 'Item Gained'}</h3>
       ${m.items.map(it => `
@@ -760,9 +820,14 @@ function renderItemsGainedModal(m){
           <div class="rc-meta">${escHtml(it.desc || 'No description.')}</div>
         </div>
       `).join('')}
-      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Got it</button></div>
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeItemsGainedModal()">Got it</button></div>
     </div>
   </div>`;
+}
+function closeItemsGainedModal(){
+  state.modal = null;
+  state.pendingItemClaim = null;
+  render();
 }
 
 // ---- Edit character modal ----
@@ -1283,6 +1348,98 @@ async function attemptBothEndpoints(body){
     }
   }
 }
+// ---- Incremental narration extraction while the tool-use JSON streams in ----
+// The model streams its structured output as raw JSON text (input_json_delta chunks).
+// We can't parse the whole thing until it's complete, but "narration" is the first
+// schema field, so we can pull its string value out character-by-character as it
+// arrives and show it live, well before the rest of the response finishes.
+function createNarrationExtractor(onUpdate){
+  let json = '';
+  let phase = 'seek-key'; // seek-key -> seek-colon -> seek-quote -> in-string -> done
+  let scanPos = 0;
+  let value = '';
+  let escaping = false;
+  return function feed(chunk){
+    json += chunk;
+    if(phase === 'done') return;
+    if(phase === 'seek-key'){
+      const idx = json.indexOf('"narration"');
+      if(idx === -1) return;
+      scanPos = idx + '"narration"'.length;
+      phase = 'seek-colon';
+    }
+    while(scanPos < json.length && phase !== 'done'){
+      const ch = json[scanPos];
+      if(phase === 'seek-colon'){
+        if(ch === ':'){ phase = 'seek-quote'; }
+        scanPos++;
+        continue;
+      }
+      if(phase === 'seek-quote'){
+        if(ch === ' ' || ch === '\n' || ch === '\t'){ scanPos++; continue; }
+        if(ch === '"'){ phase = 'in-string'; scanPos++; continue; }
+        phase = 'done'; return; // unexpected — bail out of live extraction quietly
+      }
+      if(phase === 'in-string'){
+        if(escaping){
+          if(ch === 'n') value += '\n';
+          else if(ch === 't') value += '\t';
+          else if(ch === '"') value += '"';
+          else if(ch === '\\') value += '\\';
+          else value += ch;
+          escaping = false; scanPos++; continue;
+        }
+        if(ch === '\\'){ escaping = true; scanPos++; continue; }
+        if(ch === '"'){ phase = 'done'; scanPos++; onUpdate(value); return; }
+        value += ch; scanPos++; continue;
+      }
+    }
+    if(phase === 'in-string') onUpdate(value);
+  };
+}
+async function callDMApiStreaming(body, onNarrationDelta){
+  const res = await fetch("/api/dm", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(Object.assign({}, body, { stream:true }))
+  });
+  if(res.status === 404 || !res.ok || !res.body) throw new Error('streaming proxy unavailable');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const extractor = createNarrationExtractor(onNarrationDelta);
+  let buffer = '';
+  let toolInputJson = '';
+  let usage = {};
+
+  while(true){
+    const { done, value } = await reader.read();
+    if(done) break;
+    buffer += decoder.decode(value, { stream:true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for(const line of lines){
+      const trimmed = line.trim();
+      if(!trimmed.startsWith('data:')) continue;
+      const dataStr = trimmed.slice(5).trim();
+      if(!dataStr || dataStr === '[DONE]') continue;
+      let evt;
+      try{ evt = JSON.parse(dataStr); }catch(e){ continue; }
+      if(evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'input_json_delta'){
+        toolInputJson += evt.delta.partial_json;
+        extractor(evt.delta.partial_json);
+      } else if(evt.type === 'message_start' && evt.message && evt.message.usage){
+        usage = Object.assign({}, usage, evt.message.usage);
+      } else if(evt.type === 'message_delta' && evt.usage){
+        usage = Object.assign({}, usage, evt.usage);
+      } else if(evt.type === 'error'){
+        throw new Error(evt.error && evt.error.message ? evt.error.message : 'stream error event');
+      }
+    }
+  }
+  if(!toolInputJson) throw new Error('no tool input received via stream');
+  return { input: JSON.parse(toolInputJson), usage };
+}
 async function callDMApi(body){
   try{
     return await attemptBothEndpoints(body);
@@ -1318,31 +1475,59 @@ async function sendAction(actionText, meta){
     is_resume: !!meta.isResume,
     override_invalid: !!meta.overrideInvalid
   };
+  const requestBody = {
+    model: state.settings.fastMode ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-6",
+    max_tokens:800,
+    system: [
+      { type:"text", text: buildStaticInstructions(), cache_control:{ type:"ephemeral" } },
+      { type:"text", text: buildDynamicContext() }
+    ],
+    tools:[DM_TOOL_SCHEMA],
+    tool_choice:{ type:"tool", name:"dm_response" },
+    messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
+  };
+
+  let streamingMsg = null;
   try{
     const startedAt = performance.now();
-    const data = await callDMApi({
-      model: state.settings.fastMode ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-6",
-      max_tokens:800,
-      system: [
-        { type:"text", text: buildStaticInstructions(), cache_control:{ type:"ephemeral" } },
-        { type:"text", text: buildDynamicContext() }
-      ],
-      tools:[DM_TOOL_SCHEMA],
-      tool_choice:{ type:"tool", name:"dm_response" },
-      messages:[...chatToApiHistory(), { role:'user', content:[{type:'text', text: JSON.stringify(payload)}] }]
-    });
+    let toolInput, usage, streamed = false;
+    try{
+      // Streaming path: narration appears live as it's generated, via the /api/dm proxy only —
+      // if this isn't available (previewing outside Vercel) or fails for any reason, we fall
+      // straight back to the existing buffered call below with zero visible disruption.
+      streamingMsg = { type:'dm', text:'', companions:[], streaming:true };
+      state.chat.push(streamingMsg);
+      state.loading = false;
+      render();
+      const result = await callDMApiStreaming(requestBody, (partial)=>{ streamingMsg.text = partial; render(); });
+      toolInput = result.input;
+      usage = result.usage || {};
+      streamed = true;
+    }catch(streamErr){
+      const idx = state.chat.indexOf(streamingMsg);
+      if(idx>=0) state.chat.splice(idx,1);
+      streamingMsg = null;
+      state.loading = true;
+      render();
+      const data = await callDMApi(requestBody);
+      const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
+      if(!toolUse) throw new Error('No structured response returned.');
+      toolInput = toolUse.input;
+      usage = data.usage || {};
+    }
     const elapsedMs = Math.round(performance.now() - startedAt);
-    const toolUse = (data.content||[]).find(b=>b.type==='tool_use' && b.name==='dm_response');
-    if(!toolUse) throw new Error('No structured response returned.');
-    const usage = data.usage || {};
     logDebugEntry({
       context: 'DM call timing',
       action: actionText,
-      message: `${elapsedMs}ms · in:${usage.input_tokens||'?'} out:${usage.output_tokens||'?'} cache_read:${usage.cache_read_input_tokens||0} cache_write:${usage.cache_creation_input_tokens||0}`,
+      message: `${elapsedMs}ms${streamed?' (streamed)':''} · in:${usage.input_tokens||'?'} out:${usage.output_tokens||'?'} cache_read:${usage.cache_read_input_tokens||0} cache_write:${usage.cache_creation_input_tokens||0}`,
       attempts: null
     });
-    await applyDMResponse(toolUse.input, meta, actionText);
+    await applyDMResponse(toolInput, meta, actionText, streamingMsg);
   }catch(err){
+    if(streamingMsg){
+      const idx = state.chat.indexOf(streamingMsg);
+      if(idx>=0) state.chat.splice(idx,1);
+    }
     logDebugEntry({
       context: 'DM API call',
       action: actionText,
@@ -1354,18 +1539,29 @@ async function sendAction(actionText, meta){
   state.loading = false;
   render();
 }
-async function applyDMResponse(d, meta, originalActionText){
+async function applyDMResponse(d, meta, originalActionText, existingMsgRef){
   meta = meta || {};
 
   // Invalid-action check: the DM decided the described action isn't actually possible
   // (no such power, item doesn't exist/can't be removed, etc). Skip this entirely if the
   // player already chose to override — that retry is allowed to go through normally.
   if(!meta.isOOC && d.action_validity && d.action_validity.valid === false && !meta.overrideInvalid){
+    if(existingMsgRef){
+      const idx = state.chat.indexOf(existingMsgRef);
+      if(idx>=0) state.chat.splice(idx,1);
+    }
     state.chat.push({ type:'invalid-action', reason: d.action_validity.reason || "That doesn't seem possible right now.", originalAction: originalActionText });
     return;
   }
 
-  state.chat.push({ type:'dm', text:d.narration, companions: meta.isOOC ? [] : (d.companions||[]), isOOC: !!meta.isOOC });
+  if(existingMsgRef){
+    existingMsgRef.text = d.narration;
+    existingMsgRef.companions = meta.isOOC ? [] : (d.companions||[]);
+    existingMsgRef.isOOC = !!meta.isOOC;
+    existingMsgRef.streaming = false;
+  } else {
+    state.chat.push({ type:'dm', text:d.narration, companions: meta.isOOC ? [] : (d.companions||[]), isOOC: !!meta.isOOC });
+  }
   state.lastOptions = d.response_options || [];
 
   if(meta.isOOC){
@@ -1442,9 +1638,9 @@ async function applyDMResponse(d, meta, originalActionText){
   if(d.item_found){
     if(!state.character.itemInfo) state.character.itemInfo = {};
     state.character.itemInfo[d.item_found.name] = d.item_found.desc || '';
-    state.modal = { kind:'item', item:d.item_found };
+    state.pendingItemClaim = { kind:'item', item:d.item_found };
   } else if(newlyGained.length){
-    state.modal = { kind:'items-gained', items:newlyGained };
+    state.pendingItemClaim = { kind:'items-gained', items:newlyGained };
   } else if(d.requires_roll){
     state.modal = { kind:'dice', requirement:d.requires_roll, chosenDie:d.requires_roll.die, result:null };
   }
