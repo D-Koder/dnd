@@ -54,3 +54,9 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 ## Rules of This World
 - "Magic" and "tech" are the same thing, just different vocabulary — old-world scientists and old-world wizards were arguing about the same stuff.
 - Nothing here needs to be taken too seriously. If it's funnier the weird way, go with funnier.
+
+### How Combat Works
+- Attack roll (yours, against an enemy) = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
+- Hit damage you deal = roll a d6.
+- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
+- Damage you take is a real HP pool (20/20 to start), not a word — the DM applies it when a monster's attack connects, a trap triggers, or any hazard hits: roughly 2-4 for a minor hit, 5-8 for a solid hit, 9-15 for something dangerous. At 0 HP the character is Down — permanent if Hardcore Mode is on, a serious-but-recoverable setback if it's off.
