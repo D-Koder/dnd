@@ -458,7 +458,10 @@ async function bootSaveFiles(){
   state.booting = false;
 
   if(restoredChat){
-    state.chat = restoredChat;
+    // Strip any restore notes already baked into the saved transcript from previous
+    // reloads — otherwise every refresh permanently adds one more, since the whole array
+    // (notes included) gets persisted again right after restoring. Cap at exactly one.
+    state.chat = restoredChat.filter(m => !(m.type==='note' && m.text==='💾 Restored previous conversation.'));
     if(restoredOptions) state.lastOptions = restoredOptions;
     if(restoredCombat) state.combat = restoredCombat;
     if(restoredItemClaim) state.pendingItemClaim = restoredItemClaim;
