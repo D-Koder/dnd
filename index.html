@@ -288,6 +288,7 @@ function createDefaultState(){
     },
     debugLog: [],
     pendingItemClaim: null, // { kind:'item'|'items-gained', ... } — composer becomes a Claim button until this is opened/resolved
+    pendingRoll: null, // DM-requested roll requirement { die, reason } — survives a refresh so it isn't silently lost
     filesLoaded: false,
   };
 }
@@ -414,11 +415,24 @@ async function bootSaveFiles(){
   // Check for a local chat transcript — if present, this device has an in-progress
   // session that should just continue exactly as it was, no fresh resume call needed.
   let restoredChat = null;
+  let restoredOptions = null;
+  let restoredCombat = null;
+  let restoredItemClaim = null;
+  let restoredRoll = null;
   try{
     const savedChat = await storageGet('veyrune:chat_transcript');
     if(savedChat){
       const parsed = JSON.parse(savedChat);
-      if(Array.isArray(parsed) && parsed.length) restoredChat = parsed;
+      if(Array.isArray(parsed)){
+        // Old format from before options/combat were bundled in — chat only.
+        if(parsed.length) restoredChat = parsed;
+      } else if(parsed && Array.isArray(parsed.chat) && parsed.chat.length){
+        restoredChat = parsed.chat;
+        restoredOptions = parsed.lastOptions || [];
+        restoredCombat = parsed.combat || null;
+        restoredItemClaim = parsed.pendingItemClaim || null;
+        restoredRoll = parsed.pendingRoll || null;
+      }
     }
   }catch(e){ /* fine, fall through to normal boot */ }
 
@@ -445,6 +459,13 @@ async function bootSaveFiles(){
 
   if(restoredChat){
     state.chat = restoredChat;
+    if(restoredOptions) state.lastOptions = restoredOptions;
+    if(restoredCombat) state.combat = restoredCombat;
+    if(restoredItemClaim) state.pendingItemClaim = restoredItemClaim;
+    if(restoredRoll){
+      state.pendingRoll = restoredRoll;
+      state.modal = { kind:'dice', requirement:restoredRoll, chosenDie:restoredRoll.die, result:null };
+    }
     state.chat.push({ type:'note', text:'💾 Restored previous conversation.' });
     render();
     return;
@@ -493,7 +514,13 @@ function scheduleChatPersist(){
   // coalesces rapid updates into a single storage write ~600ms after things settle down.
   if(chatPersistTimer) clearTimeout(chatPersistTimer);
   chatPersistTimer = setTimeout(()=>{
-    storageSet('veyrune:chat_transcript', JSON.stringify(state.chat.slice(-200)));
+    storageSet('veyrune:chat_transcript', JSON.stringify({
+      chat: state.chat.slice(-200),
+      lastOptions: state.lastOptions,
+      combat: state.combat,
+      pendingItemClaim: state.pendingItemClaim,
+      pendingRoll: state.pendingRoll
+    }));
   }, 600);
 }
 
@@ -722,11 +749,21 @@ function renderResetConfirmModal(){
     </div>
   </div>`;
 }
-function closeModal(){ state.modal = null; render(); }
+function closeModal(){
+  // Dismissing a DM-requested roll cancels the pending requirement too — same as before,
+  // there's no reopen affordance for it, so an explicit dismissal should actually clear it
+  // rather than leaving a ghost requirement that reappears next reload.
+  if(state.modal && state.modal.kind==='dice' && state.modal.requirement){
+    state.pendingRoll = null;
+  }
+  state.modal = null;
+  render();
+}
 
 // ---- Dice modal ----
 function openDiceModal(requirement){
   // requirement: { die, reason } when the DM asked for a specific roll; null for a manual/quick roll
+  state.pendingRoll = requirement || null;
   state.modal = { kind:'dice', requirement, chosenDie: requirement ? requirement.die : 'd20', result:null };
   render();
 }
@@ -764,6 +801,7 @@ function confirmRoll(){
   if(m.requirement){
     const resolution = { die:m.chosenDie, roll:m.result.roll, modifier:m.result.mod, total:m.result.total, reason:m.requirement.reason };
     state.modal = null;
+    state.pendingRoll = null;
     sendAction(`(rolled for: ${m.requirement.reason})`, { resolution });
   } else {
     state.modal = null;
