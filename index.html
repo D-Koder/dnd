@@ -64,7 +64,7 @@
   }
   .status-strip .top-row{ display:flex; align-items:center; gap:12px; }
   .status-strip .glyph{ width:20px; height:20px; color:var(--brass); flex-shrink:0; }
-  .status-strip .stats{ display:flex; gap:12px; flex-wrap:wrap; color:var(--cream-dim); letter-spacing:0.5px; }
+  .status-strip .stats{ display:flex; gap:12px; flex-wrap:nowrap; color:var(--cream-dim); letter-spacing:0.5px; overflow:hidden; }
   .status-strip .stats b{ color:var(--brass); font-weight:normal; }
   .status-strip .quest-row{ font-size:10px; color:var(--cream-dim); padding-left:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .quest-badge{ font-family:var(--mono); font-size:10px; letter-spacing:1.5px; color:var(--brass); background:rgba(201,112,74,0.12); border:1px solid var(--brass-dim); display:inline-block; padding:3px 8px; border-radius:2px; margin:8px 0 6px; }
@@ -766,12 +766,14 @@ function render(){
           <span>❤ <b>${state.character.hpCurrent}/${state.character.hpMax} · ${state.character.hp}${state.character.stable?' (stable)':''}</b></span>
           <span>🛡️ <b>AC ${armorClass()}</b></span>
           <span>💧🪨 <b>${magicLabel()}</b></span>
-          <span>🪙 <b>${state.character.coins}</b></span>
-          <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
         </div>
       </div>
-      ${(state.character.conditions.length || state.character.exhaustion>0) ? `<div class="quest-row" style="color:var(--danger);">⚠️ ${[...state.character.conditions, ...(state.character.exhaustion>0?[`Exhaustion ${state.character.exhaustion}`]:[])].map(escHtml).join(' · ')}</div>` : ''}
-      <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
+      <div class="quest-row" style="display:flex; align-items:center; gap:12px; white-space:nowrap;">
+        <span>🪙 <b>${state.character.coins}</b></span>
+        <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
+        <span style="overflow:hidden; text-overflow:ellipsis;">🎯 <b>${escHtml(state.character.quest)}</b></span>
+      </div>
+      ${(state.character.conditions.length || state.character.exhaustion>0) ? `<div class="quest-row" style="color:var(--danger); padding-left:0; margin-top:4px;">⚠️ ${[...state.character.conditions, ...(state.character.exhaustion>0?[`Exhaustion ${state.character.exhaustion}`]:[])].map(escHtml).join(' · ')}</div>` : ''}
     </div>
     ${isChat ? `
       <div id="feed">${state.booting
