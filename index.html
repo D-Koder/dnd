@@ -27,10 +27,10 @@
       linear-gradient(160deg, #0F1E1D 0%, #0C1A19 55%, #0F1F1C 100%);
   }
   #map-bg{ position:fixed; inset:0; z-index:-2; background-size:cover; background-position:center;
-    opacity:0; transition:opacity 1.4s ease; filter:sepia(25%) saturate(80%) brightness(0.5); }
+    opacity:0; transition:opacity 1.4s ease; filter:sepia(20%) saturate(90%) brightness(0.85); }
   #map-bg.loaded{ opacity:1; }
   #map-wash{ position:fixed; inset:0; z-index:-1;
-    background:linear-gradient(180deg, rgba(15,30,29,0.8) 0%, rgba(15,30,29,0.6) 40%, rgba(15,30,29,0.88) 100%); }
+    background:linear-gradient(180deg, rgba(15,30,29,0.55) 0%, rgba(15,30,29,0.35) 40%, rgba(15,30,29,0.65) 100%); }
   .scanlines{ position:fixed; inset:0; pointer-events:none; z-index:40;
     background:repeating-linear-gradient(0deg, rgba(0,0,0,0.05) 0px, rgba(0,0,0,0.05) 1px, transparent 1px, transparent 3px);
     opacity:0.3; mix-blend-mode:overlay; }
@@ -2052,10 +2052,12 @@ function renderDebugLogModal(){
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="sheet" style="max-width:600px; max-height:80vh; overflow-y:auto;">
       <h3>Debug Log</h3>
+      <div class="ref-row" style="margin-bottom:10px; flex-wrap:wrap;">
+        <button class="pill-btn" onclick="testSvgFallbackBackground()">Test SVG Fallback</button>
+        <button class="pill-btn" onclick="loadMapBackground()">Retry Live Map</button>
+        ${state.debugLog.length ? `<button class="pill-btn" onclick="clearDebugLog()">Clear Log</button>` : ''}
+      </div>
       ${state.debugLog.length ? `
-        <div class="ref-row" style="margin-bottom:10px;">
-          <button class="pill-btn" onclick="clearDebugLog()">Clear Log</button>
-        </div>
         ${state.debugLog.map(entry => `
           <div class="ref-card">
             <div class="rc-name" style="color:var(--danger);">${escHtml(entry.time)} — ${escHtml(entry.context||'Error')}</div>
@@ -2123,7 +2125,7 @@ Mark a quest complete via quest_updates.complete (list its exact title) the turn
 Every quest at every tier (new_main/new_side/new_small/new_unique) needs real "goals" (2-3 short, concrete, checkable steps, max 3 — not vague vibes, things you can tell whether the player has actually done) and a real "reward". As individual goals get accomplished in play, mark them via quest_updates.goal_done (exact quest title + exact goal text) — don't wait until the very end to update anything, tick them off as they genuinely happen. For Main Quest specifically: once all 3 goals are done, that quest should complete and be replaced by the next one in the throughline — don't let it linger fully-checked without concluding.
 Reward rules: never leave reward empty — if you genuinely don't know what it'll be yet, use exactly "??" (optionally with a short note after, e.g. "?? — Corr hasn't said what he'll offer"). If the reward is notably advantageous — something that gives a real edge outside or inside combat, not just a generic prize (a rare tool, a useful weapon, information that unlocks something, anything tied to a Unique Event's big payoff) — prefix it with "!!" (e.g. "!! An old-tech multitool that reveals hidden mechanisms"). Otherwise just describe it plainly. Common rewards are simple items or coin; a quest can list multiple rewards together in one string when that's warranted by its difficulty (e.g. "40 coils and a masterwork dagger"). Reward size/nature should scale to the quest's actual complexity/tier and fit the personality and means of whoever's offering it — a wealthy patron offers differently than a struggling fisherman, a generous NPC differently than a stingy one.
 Main vs. Side: if something is connected to or supports the main story but isn't the singular main throughline itself — a related sub-plot, a task that feeds into it without being it — that's a Side Quest, not an additional Main Quest entry. Keep Main strictly to the 1-2 quests that ARE the throughline.
-Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). Keep quest.current short — just the quest's name (e.g. "The Hum Job"), not the full hook — it's shown compactly in the HUD at all times, so a long string there crowds the screen. The actual detail belongs in the Main Quest's own desc field (via quest_updates.new_main) once it exists as a real quest, not crammed into this field. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
+Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). Keep quest.current short — just the quest's name (e.g. "The Hum Job"), not the full hook — it's shown compactly in the HUD at all times, so a long string there crowds the screen. The actual detail belongs in the Main Quest's own desc field (via quest_updates.new_main) once it exists as a real quest, not crammed into this field. session_summary.new_area: set this only when the player genuinely arrives somewhere visually distinct from where they just were — a real location change (leaving the market for the sealed hull, descending into a new deck, arriving at a different settlement), not a beat-to-beat shift within the same space. Fill it with a short visual search phrase for that new place (e.g. "underground sealed ship corridor amber bioluminescent light", "salvage market stalls dockside"), not a story summary — this drives the background image, so it needs to describe what it should look like, not what's happening there. Leave it null on every turn that isn't a real location change. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
 Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Every negative coins_delta (a spend) is now held by the app for the player's explicit approval before it's ever actually deducted — you don't need to worry about accidentally overcharging, the mechanism itself prevents that. Still narrate purchases naturally when the player has clearly chosen to buy something (don't withhold narration waiting for a separate confirmation step — the app handles the actual approval on its own), and always fill character_status.spend_reason with a short description of what the coins are for (e.g. "food and rope from the market") so the approval prompt is clear about what's being paid for.
 XP (character_status.xp_delta): award for real accomplishments — completing a quest goal, resolving a genuine risk or encounter, a meaningful discovery — not for routine narration or small talk. This uses the real D&D XP scale (300 total XP reaches level 2, 900 reaches level 3, and it climbs fast from there), so awards need to be sized accordingly, not small: a minor beat 25-50 XP, a solid accomplishment 75-150, completing a Side Quest/Small Request 150-300, completing a Main Quest or Unique Event 400-800. The app handles leveling itself (HP growth via hit die + Constitution, ability score improvements at the standard levels, full heal) automatically once enough is earned — you don't need to track levels or thresholds, just award XP when it's actually earned.
@@ -2207,8 +2209,9 @@ const DM_TOOL_SCHEMA = {
       }, required:["hp_delta","coins_delta","spend_reason","magic_reserve","xp_delta","conditions_add","conditions_remove","exhaustion_delta","rest"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
-        where_we_are:{type:"string"}
-      }, required:["where_we_are"] },
+        where_we_are:{type:"string"},
+        new_area:{type:["string","null"]}
+      }, required:["where_we_are","new_area"] },
       world_bible_updates:{ type:"object", properties:{
         new_locations:{type:"array",items:{type:"string"}},
         new_settlements:{type:"array",items:{ type:"object", properties:{
@@ -2753,6 +2756,7 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   (d.quest && d.quest.new_threads || []).forEach(t=>state.sessionMeta.openThreads.push(t));
   if(d.session_summary){
     if(d.session_summary.where_we_are) state.sessionMeta.whereWeAre = d.session_summary.where_we_are;
+    if(d.session_summary.new_area) loadMapBackground(d.session_summary.new_area);
   }
 
   let worldBibleChanged = false;
@@ -3541,11 +3545,16 @@ function applySvgFallbackBackground(){
   bg.style.filter = 'none'; // SVG is already toned for the theme, no extra sepia needed
   requestAnimationFrame(()=>bg.classList.add('loaded'));
 }
+function testSvgFallbackBackground(){
+  applySvgFallbackBackground();
+  logDebugEntry({ context:'Background image', action:'manual test: SVG fallback forced', message:'This uses an inline data URI, no network fetch at all. If you still see nothing after this, it is a display/CSS issue, not a loading issue — if this IS visible but a live map load reports "loaded" and still shows nothing, the issue is specific to external images.', attempts:null });
+  closeModal();
+}
 
 const MAP_QUERIES = ['antique nautical chart parchment','old world map engraving','antique map torn edges','historical sea chart parchment'];
-async function loadMapBackground(){
+async function loadMapBackground(queryOverride){
   try{
-    const query = MAP_QUERIES[Math.floor(Math.random()*MAP_QUERIES.length)];
+    const query = queryOverride || MAP_QUERIES[Math.floor(Math.random()*MAP_QUERIES.length)];
     const url = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search'
       + '&gsrsearch=' + encodeURIComponent(query) + '&gsrnamespace=6&gsrlimit=12'
       + '&prop=imageinfo&iiprop=url%7Cmime&iiurlwidth=1600&format=json&origin=*';
@@ -3570,14 +3579,20 @@ async function loadMapBackground(){
       preload.src = imgUrl;
     });
     const bg = document.getElementById('map-bg');
+    if(queryOverride){
+      // Scene change — fade the old image out before swapping, so it reads as a deliberate
+      // transition into a new area rather than an abrupt cut.
+      bg.classList.remove('loaded');
+      await new Promise(r=>setTimeout(r, 700));
+    }
     bg.style.backgroundImage = `url("${imgUrl}")`;
     requestAnimationFrame(()=>bg.classList.add('loaded'));
-    logDebugEntry({ context:'Background image', action:'live map loaded', message:`query "${query}" → ${imgUrl}`, attempts:null });
+    logDebugEntry({ context:'Background image', action: queryOverride ? 'scene change → new map loaded' : 'live map loaded', message:`query "${query}" → ${imgUrl}`, attempts:null });
     try{ render(); }catch(e){}
   }catch(err){
     console.warn('Live map fetch unavailable, using glyph watermark fallback:', err.message);
     logDebugEntry({ context:'Background image', action:'fell back to SVG watermark', message:err.message, attempts:null });
-    applySvgFallbackBackground();
+    if(!queryOverride) applySvgFallbackBackground(); // for a scene change, just keep the current background rather than reverting to the generic watermark
     try{ render(); }catch(e){}
   }
 }
