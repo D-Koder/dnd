@@ -26,9 +26,10 @@
       repeating-linear-gradient(115deg, rgba(232,220,196,0.015) 0px, rgba(232,220,196,0.015) 2px, transparent 2px, transparent 5px),
       linear-gradient(160deg, #0F1E1D 0%, #0C1A19 55%, #0F1F1C 100%);
   }
-  #map-bg{ position:fixed; inset:0; z-index:-2; background-size:cover; background-position:center;
+  #map-bg{ position:fixed; inset:0; z-index:-2; background-size:cover; background-position:center; overflow:hidden;
     opacity:0; transition:opacity 1.4s ease; filter:sepia(20%) saturate(90%) brightness(0.85); }
   #map-bg.loaded{ opacity:1; }
+  #map-bg img{ width:100%; height:100%; object-fit:cover; display:block; }
   #map-wash{ position:fixed; inset:0; z-index:-1;
     background:linear-gradient(180deg, rgba(15,30,29,0.55) 0%, rgba(15,30,29,0.35) 40%, rgba(15,30,29,0.65) 100%); }
   .scanlines{ position:fixed; inset:0; pointer-events:none; z-index:40;
@@ -3541,6 +3542,7 @@ function applySvgFallbackBackground(){
   const svg = buildBackgroundSVG();
   const uri = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
   const bg = document.getElementById('map-bg');
+  bg.innerHTML = ''; // clear any previous live-map <img> element
   bg.style.backgroundImage = `url("${uri}")`;
   bg.style.filter = 'none'; // SVG is already toned for the theme, no extra sepia needed
   requestAnimationFrame(()=>bg.classList.add('loaded'));
@@ -3572,11 +3574,15 @@ async function loadMapBackground(queryOverride){
     if(!candidates.length) throw new Error('no usable results');
     const pick = candidates[Math.floor(Math.random()*candidates.length)];
     const imgUrl = pick.thumburl || pick.url;
-    await new Promise((resolve, reject) => {
-      const preload = new Image();
-      preload.onload = resolve;
-      preload.onerror = reject;
-      preload.src = imgUrl;
+    // Load as a real <img> element (not CSS background-image) — reuse the same element that
+    // proves the load succeeded, rather than discarding it and re-requesting via a different
+    // browser code path that handles cross-origin resources differently.
+    const imgEl = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.crossOrigin = 'anonymous';
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.src = imgUrl;
     });
     const bg = document.getElementById('map-bg');
     if(queryOverride){
@@ -3585,7 +3591,9 @@ async function loadMapBackground(queryOverride){
       bg.classList.remove('loaded');
       await new Promise(r=>setTimeout(r, 700));
     }
-    bg.style.backgroundImage = `url("${imgUrl}")`;
+    bg.style.backgroundImage = ''; // clear any leftover SVG fallback
+    bg.innerHTML = '';
+    bg.appendChild(imgEl);
     requestAnimationFrame(()=>bg.classList.add('loaded'));
     logDebugEntry({ context:'Background image', action: queryOverride ? 'scene change → new map loaded' : 'live map loaded', message:`query "${query}" → ${imgUrl}`, attempts:null });
     try{ render(); }catch(e){}
