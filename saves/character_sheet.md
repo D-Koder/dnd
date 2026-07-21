@@ -9,7 +9,7 @@
 - **Magic Grounding:** On Stone
 - **Coins:** 8 coils *(see world_bible.md → Currency)*
 - **Magic Reserve:** 3/3
-- **Quest:** The Hum Job — Port Halloway hull, Anchor-7 *(full detail in session_log.md → Current Quest / Hook)*
+- **Quest:** The Hum Job *(full detail in session_log.md → Current Quest / Hook)*
 - **Inventory:** Relic-scanning kit, Rusted key (in pedestal), Dormant egg-object (unpaired), Corr's family disc, Glow-sticks (x3), Cracked capacitor, Copper wire (short coil), Rope (mid-length, climbing-grade), Day-pack food (x1)
 
 ## Equipment
@@ -21,11 +21,23 @@
 - **Hands (1/2):** Modified focus-tool (1h)
 *Head/Body/Feet/Accessory are single-item slots — equipping something new swaps out the old one. Hands are capacity-based: a one-handed item costs 1, two-handed costs both.*
 
+## Item Descriptions
+- **Modified focus-tool:** Homebrew-tweaked focus conduit. Channels grounded magic through the Focus Pulse attack.
+- **Relic fragment (reactive):** Warmed for the first time on contact with the ship's distress signal. Origin unknown — increasingly tied to Coralkin history, predating even Corr's family's knowledge of the hull.
+- **Relic-scanning kit:** Standard field kit for reading old-tech energy signatures.
+- **Rusted key (in pedestal):** Embedded shard matches the relic fragment's energy signature. Currently seated in the downstairs pedestal socket.
+- **Dormant egg-object (unpaired):** Confirmed as a "seed-lock" by Old Corr, his grandmother's term. Glyph outline appeared on its surface after contact with Corr's disc — now warm.
+- **Corr's family disc:** Bears the same three-rings-and-jagged-line glyph as the key and console. Briefly pulsed in sync with the relic fragment during pairing.
+- **Glow-sticks (x3):** Cracked for light, not magic. Basic, but reliable.
+- **Cracked capacitor:** Bought cheap off a market vendor. Worse condition than advertised — Thrum noticed immediately.
+- **Copper wire (short coil):** Salvage-grade conductor, bought at the market alongside the capacitor.
+- **Rope (mid-length, climbing-grade):** Bought at the market ahead of the hull descent.
+- **Day-pack food (x1):** Basic rations, bought at the market ahead of the hull descent.
+
 ## Level & Experience
 - **Level:** 1
 - **Proficiency Bonus:** +2
 - **XP:** 0 / 300
-- **Skill Points Banked:** 0 *(skills system not built yet — these carry forward until it is)*
 
 ## Ability Scores
 - **STR:** 8 (-1)
