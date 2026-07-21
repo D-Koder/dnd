@@ -49,7 +49,7 @@ Port Halloway — standing at the lower deck hatch, prepped and ready to enter t
   - [x] Pair Raken's relic fragment with Corr's family disc
   - [ ] Investigate the second sealed door and its fresh energy trail
   - [ ] Trace the Anchor-7 signal to its source
-  - **Reward:** ❓ not yet known — — the hull hasn't shown its hand yet
+  - **Reward:** ❓ not yet known — the hull hasn't shown its hand yet
 ### Side Quests (0/5)
 - (none yet)
 ### Small Requests (1/10)
@@ -255,3 +255,4 @@ _💾 Auto-saved — session log updated._
 **DM:** The three of you leave the market strip behind and cut through Port Halloway's lower alleys toward the hull entrance. The hum gets louder as you close in — not quite a sound, more something you feel in your back teeth. The hatch is exactly where you left it: iron-cold, faintly sweating condensation, the glyph etched above it catching the last of the daylight.
 > **Bex:** "Door's still here. Tragically, no one sealed it back up while we were gone."
 > **Thrum:** "Good. I dislike surprises at doors."
+
