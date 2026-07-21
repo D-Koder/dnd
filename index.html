@@ -62,12 +62,23 @@
     border-bottom:1px solid var(--line); font-family:var(--mono); font-size:11px;
     cursor:pointer; flex-shrink:0;
   }
-  .status-strip .top-row{ display:flex; align-items:center; gap:12px; }
+  .status-strip .top-row{ display:flex; align-items:center; gap:14px; }
   .status-strip .glyph{ width:20px; height:20px; color:var(--brass); flex-shrink:0; }
-  .status-strip .stats{ display:flex; gap:12px; flex-wrap:nowrap; color:var(--cream-dim); letter-spacing:0.5px; overflow:hidden; }
+  .status-strip .stats{ display:flex; gap:14px; flex-wrap:nowrap; color:var(--cream-dim); letter-spacing:0.5px; overflow:hidden; align-items:center; }
   .status-strip .stats b{ color:var(--brass); font-weight:normal; }
   .status-strip .quest-row{ font-size:10px; color:var(--cream-dim); padding-left:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .quest-badge{ font-family:var(--mono); font-size:10px; letter-spacing:1.5px; color:var(--brass); background:rgba(201,112,74,0.12); border:1px solid var(--brass-dim); display:inline-block; padding:3px 8px; border-radius:2px; margin:8px 0 6px; }
+  .hud-hp{ display:flex; align-items:baseline; gap:8px; }
+  .hud-hp-num{ font-family:var(--mono); letter-spacing:0.3px; }
+  .hud-hp-label{ font-family:var(--mono); font-size:10px; color:var(--teal); letter-spacing:1.2px; }
+  .hud-divider{ width:1px; height:12px; background:var(--line); flex-shrink:0; opacity:0.8; }
+  .hud-ac{ font-family:var(--mono); letter-spacing:0.3px; color:var(--brass); white-space:nowrap; }
+  .hud-vitals-bar{ height:2px; background:var(--line); border-radius:1px; overflow:hidden; margin:12px 0; }
+  .hud-vitals-bar-fill{ height:100%; transition:width .3s, background .3s; }
+  .hud-row2{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding-bottom:2px; font-size:12px; }
+  .hud-resources{ display:flex; align-items:center; gap:16px; overflow:hidden; }
+  .hud-objective{ display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10px; color:var(--brass); letter-spacing:0.8px; flex-shrink:0; }
+  .hud-objective span:last-child{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:15ch; }
   .status-strip .quest-row b{ color:var(--brass); font-weight:normal; }
 
   /* ---- chat feed: console log, not messenger bubbles ---- */
@@ -410,6 +421,13 @@ function hpLabel(current, max){
   if(pct > 0.4) return 'Bruised';
   if(pct > 0.15) return 'Hurt';
   return 'Critical';
+}
+function vitalsBarColor(current, max){
+  if(current <= 0) return 'var(--danger)';
+  const pct = current / max;
+  if(pct > 0.7) return 'var(--teal)';
+  if(pct > 0.4) return 'var(--brass)';
+  return 'var(--danger)';
 }
 // Real D&D 5e SRD XP threshold table (index 0 = level 1's threshold, i.e. 0).
 const XP_THRESHOLDS = [0,300,900,2700,6500,14000,23000,34000,48000,64000,85000,100000,120000,140000,165000,195000,225000,265000,305000,355000];
@@ -762,16 +780,25 @@ function render(){
     <div class="status-strip" onclick="openEditModal()">
       <div class="top-row">
         ${glyph()}
-        <div class="stats">
-          <span>❤ <b>${state.character.hpCurrent}/${state.character.hpMax} · ${state.character.hp}${state.character.stable?' (stable)':''}</b></span>
-          <span>🛡️ <b>AC ${armorClass()}</b></span>
-          <span>💧🪨 <b>${magicLabel()}</b></span>
+        <div class="hud-hp">
+          <span class="hud-hp-num"><b>${state.character.hpCurrent}/${state.character.hpMax}</b></span>
+          <span class="hud-hp-label">${state.character.hp.toUpperCase()}${state.character.stable?' (STABLE)':''}</span>
         </div>
+        <div class="hud-divider"></div>
+        <span class="hud-ac">🛡️ AC ${armorClass()}</span>
+        <div class="hud-divider"></div>
+        <span class="stats"><span>🪙 <b>${state.character.coins}</b></span></span>
       </div>
-      <div class="quest-row" style="display:flex; align-items:center; gap:12px; white-space:nowrap;">
-        <span>🪙 <b>${state.character.coins}</b></span>
-        <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
-        <span style="overflow:hidden; text-overflow:ellipsis;">🎯 <b>${escHtml(state.character.quest)}</b></span>
+      <div class="hud-vitals-bar"><div class="hud-vitals-bar-fill" style="width:${Math.max(0,Math.min(100,(state.character.hpCurrent/state.character.hpMax)*100))}%; background:${vitalsBarColor(state.character.hpCurrent, state.character.hpMax)};"></div></div>
+      <div class="hud-row2">
+        <div class="hud-resources">
+          <span class="stats"><span>💧🪨 <b>${magicLabel()}</b></span></span>
+          <span class="stats"><span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span></span>
+        </div>
+        <div class="hud-objective">
+          <span>▸</span>
+          <span title="${escHtml(state.character.quest)}">${escHtml(state.character.quest.toUpperCase())}</span>
+        </div>
       </div>
       ${(state.character.conditions.length || state.character.exhaustion>0) ? `<div class="quest-row" style="color:var(--danger); padding-left:0; margin-top:4px;">⚠️ ${[...state.character.conditions, ...(state.character.exhaustion>0?[`Exhaustion ${state.character.exhaustion}`]:[])].map(escHtml).join(' · ')}</div>` : ''}
     </div>
@@ -3541,9 +3568,13 @@ async function loadMapBackground(){
     const bg = document.getElementById('map-bg');
     bg.style.backgroundImage = `url("${imgUrl}")`;
     requestAnimationFrame(()=>bg.classList.add('loaded'));
+    logDebugEntry({ context:'Background image', action:'live map loaded', message:`query "${query}" → ${imgUrl}`, attempts:null });
+    try{ render(); }catch(e){}
   }catch(err){
     console.warn('Live map fetch unavailable, using glyph watermark fallback:', err.message);
+    logDebugEntry({ context:'Background image', action:'fell back to SVG watermark', message:err.message, attempts:null });
     applySvgFallbackBackground();
+    try{ render(); }catch(e){}
   }
 }
 loadMapBackground();
