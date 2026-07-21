@@ -56,7 +56,15 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 - Nothing here needs to be taken too seriously. If it's funnier the weird way, go with funnier.
 
 ### How Combat Works
-- Attack roll (yours, against an enemy) = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
-- Hit damage you deal = roll a d6.
+- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
+- Hit damage = roll a d6.
 - Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
-- Damage you take is a real HP pool (20/20 to start), not a word — the DM applies it when a monster's attack connects, a trap triggers, or any hazard hits: roughly 2-4 for a minor hit, 5-8 for a solid hit, 9-15 for something dangerous. At 0 HP the character is Down — permanent if Hardcore Mode is on, a serious-but-recoverable setback if it's off.
+
+### How Quests Work
+- **Main Quest** — the throughline; 1-2 active at a time, never more. Drives earning coin, story loot, encounters, NPCs, and exploring/traveling the map. Never capacity-limited, never evicted.
+- **Side Quests** — max 5 active. Quick-to-medium arcs giving real backstory/texture (an NPC's life, a local trouble). Rewards: simple items, reasonable coin, occasionally something rare.
+- **Small Requests** — max 10 active. Lightweight discrete facts/favors/leads (a favor asked in passing, a rumor, a code, a deadline) — exist so small details survive many turns without being forgotten.
+- **Unique Events** — no cap, but rare by design. Simpler in scope than a Main Quest but genuinely harder to pull off. Big payoff: epic loot, meaningful coin, and something that eases the main story.
+- **Pinning** — up to 2 Side Quests and 2 Small Requests can be pinned to exempt them from eviction (Main/Unique never need pinning, they're never evicted).
+- **When Side/Small hits its cap**, a new one doesn't silently bump an old one — you get an Accept/Reject prompt showing exactly which (oldest, unpinned) quest would be dropped. Accepting evicts it with a "you've forgotten about..." note; rejecting just declines the new one.
+- Actual current quests live in session_log.md → Active Quests, not here — this section is just the rules of how the system works.
