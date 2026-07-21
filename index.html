@@ -200,6 +200,18 @@
   .menu-item:last-child{ border-bottom:none; }
   .menu-item:hover{ color:var(--teal); }
   .inv-list{ list-style:none; padding:0; margin:0; max-height:220px; overflow-y:auto; }
+  .item-row{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    background:rgba(30,62,58,0.4); border:1px solid var(--line); border-left:3px solid #5A6E68;
+    border-radius:2px; margin-bottom:6px; padding:9px 11px; cursor:pointer;
+  }
+  .item-row:hover{ background:rgba(30,62,58,0.7); }
+  .item-row.led-teal{ border-left-color:var(--teal); }
+  .item-row.led-brass{ border-left-color:var(--brass); }
+  .item-row.led-danger{ border-left-color:var(--danger); }
+  .item-row.led-dim{ border-left-color:#5A6E68; cursor:default; }
+  .item-row-name{ font-family:var(--serif); font-size:13px; color:var(--cream); }
+  .item-row-arrow{ color:var(--cream-dim); font-size:14px; flex-shrink:0; }
   .inv-list li{ font-family:var(--mono); font-size:13px; padding:6px 0; border-bottom:1px dashed var(--line); }
 
   .ref-card{
@@ -251,13 +263,47 @@ function createDefaultState(){
       hp:'Healthy', hpCurrent:20, hpMax:20, magicCharge:'stone',
       quest:'The Hum Job — Port Halloway hull, Anchor-7',
       inventory:['Relic-scanning kit','Rusted key (in pedestal)','Dormant egg-object (unpaired)'],
-      equipped:['Modified focus-tool','Relic fragment (reactive)'],
+      // Real equipment slots — one item each for head/body/feet/accessory1/accessory2 (equipping
+      // something new auto-swaps the old one back to inventory, doesn't just add on top). Hands
+      // are capacity-based: 2 total, a one-handed item costs 1, a two-handed item costs both.
+      equipment: { head:null, body:null, feet:null, accessory1:'Relic fragment (reactive)', accessory2:null },
+      hands: [{ name:'Modified focus-tool', handsUsed:1 }],
+      extraHandCapacity: 0, // only raised by a specific in-story ability (an extra limb, etc) — never assumed
       itemInfo: {}, // itemName -> description, populated as items are found/added
       coins: 15, // in coils, the world's base currency unit — see world bible
       magicReserve: 3,
       magicReserveMax: 3, // spendable pool for significant spellwork, separate from the per-roll grounding modifier
+      // Real D&D 5e ability scores (standard array 15/14/13/12/10/8), assigned to fit a
+      // careful tech-tinkerer who isn't built for a fight. Modifier = floor((score-10)/2).
+      stats: { str:8, dex:13, con:10, int:15, wis:14, cha:12 },
+      hitDie: 8, // d8 — used for HP gained per level-up
+      level: 1,
+      xp: 0,
+      pendingFeatureLevels: [], // internal — level-gated unlocks not yet announced this session
+      attacks: [
+        { name:'Focus Pulse', type:'ranged', stat:'int', damageDie:'d6', damageType:'force', resourceCost:{ magicReserve:1 }, desc:"A discharge of grounded magic through the focus-tool." },
+        { name:'Improvised Strike', type:'melee', stat:'dex', damageDie:'d4', damageType:'bludgeoning', resourceCost:null, desc:"Grab whatever's at hand and swing — no resource cost, always available." },
+      ],
+      // Real D&D skills are binary (proficient or not) — proficiency adds the current proficiency
+      // bonus to a roll, nothing more granular. Raken starts proficient in the two that best fit
+      // an established tinkerer (Relic Read, Jury-Rig), same idea as a class/background grant.
+      skills: [
+        { name:'Relic Read', stat:'int', proficient:true, desc:'Sense and interpret old-tech signatures.' },
+        { name:'Scheme', stat:'cha', proficient:false, desc:'Fast-talk, misdirect, find the angle.' },
+        { name:'Ground & Channel', stat:'wis', proficient:false, desc:'Draw on stone/water surroundings to boost a roll.' },
+        { name:'Jury-Rig', stat:'int', proficient:true, desc:'Patch or repurpose tech in a pinch.' },
+      ],
+      // Save proficiencies — INT/WIS matches a real Wizard's actual save proficiencies, fitting a tech-mage.
+      saveProficiencies: { str:false, dex:false, con:false, int:true, wis:true, cha:false },
+      armorBonus: 0, // future equipped-armor bonus to AC, beyond the base 10 + Dex modifier
+      conditions: [], // active D&D conditions: Prone, Restrained, Frightened, etc — see CONDITIONS_DATA
+      deathSaves: { successes:0, failures:0 },
+      stable: false, // true once death saves are won — still at 0 HP, but no longer actively dying
+      exhaustion: 0, // 0-6, real D&D exhaustion levels — tracked separately since it's leveled, not binary like other conditions
     },
-    combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0 },
+    pendingSkillChoice: 0, // count of skill proficiency choices pending — granted at ASI levels
+    pendingDeathSave: false,
+    combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0, statusEffects:[] }, // statusEffects: [{name, icon, turnsLeft}] — lingering ailments like fire/poison, DM-narrated damage, app just displays them
     chat: [],
     booting: true,
     lastOptions: [],
@@ -269,6 +315,8 @@ function createDefaultState(){
     library: { section:'bestiary' }, // 'bestiary' | 'spells' — which sub-view Library tab shows
     quests: { main:[], side:[], small:[], unique:[], nextOrder:1 }, // each entry: {title, desc, status:'active'|'complete', pinned:false, order:N}
     pendingQuestOverflow: null, // { category:'side'|'small', newQuest:{title,desc}, evictCandidate:{...} } — composer shows a confirm/reject prompt
+    pendingPayment: null, // { amount, reason } — every spend is held here until the player explicitly approves it
+    pendingStatPoint: 0, // count of unallocated stat points from leveling up — composer shows an Allocate button while > 0
     stashes: [], // items intentionally left somewhere: {name, desc, location} — sent in full every turn so nothing gets forgotten
     spells: { level:0, results:[], status:'' },
     worldBible: {
@@ -319,6 +367,42 @@ function glyph(cls){ return `<svg class="glyph ${cls||''}"><use href="#glyph"/><
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s){ return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 
+function equippedItemNames(){
+  const c = state.character;
+  return [c.equipment.head, c.equipment.body, c.equipment.feet, c.equipment.accessory1, c.equipment.accessory2, ...c.hands.map(h=>h.name)].filter(Boolean);
+}
+function isEquipped(name){ return equippedItemNames().includes(name); }
+function handCapacity(){ return 2 + (state.character.extraHandCapacity||0); }
+function handsUsed(){ return state.character.hands.reduce((sum,h)=>sum+h.handsUsed,0); }
+function unequipItem(name){
+  const c = state.character;
+  let found = false;
+  ['head','body','feet','accessory1','accessory2'].forEach(slot=>{
+    if(c.equipment[slot]===name){ c.equipment[slot]=null; found=true; }
+  });
+  const hIdx = c.hands.findIndex(h=>h.name===name);
+  if(hIdx>=0){ c.hands.splice(hIdx,1); found=true; }
+  return found;
+}
+// slot: 'head'|'body'|'feet'|'accessory'|'hand1h'|'hand2h' — returns {ok, reason?, displaced?}
+function equipItemToSlot(name, slot){
+  const c = state.character;
+  if(slot==='head' || slot==='body' || slot==='feet'){
+    const displaced = c.equipment[slot];
+    if(displaced && !c.inventory.includes(displaced)) c.inventory.push(displaced);
+    c.equipment[slot] = name;
+    return { ok:true, displaced };
+  }
+  if(slot==='accessory'){
+    if(!c.equipment.accessory1){ c.equipment.accessory1 = name; return { ok:true }; }
+    if(!c.equipment.accessory2){ c.equipment.accessory2 = name; return { ok:true }; }
+    return { ok:false, reason:'both accessory slots are already full' };
+  }
+  const handsNeeded = slot==='hand2h' ? 2 : 1;
+  if(handsUsed() + handsNeeded > handCapacity()) return { ok:false, reason:`not enough free hands (${handsUsed()}/${handCapacity()} already in use)` };
+  c.hands.push({ name, handsUsed:handsNeeded });
+  return { ok:true };
+}
 function hpLabel(current, max){
   if(current <= 0) return 'Down';
   const pct = current / max;
@@ -327,10 +411,75 @@ function hpLabel(current, max){
   if(pct > 0.15) return 'Hurt';
   return 'Critical';
 }
+// Real D&D 5e SRD XP threshold table (index 0 = level 1's threshold, i.e. 0).
+const XP_THRESHOLDS = [0,300,900,2700,6500,14000,23000,34000,48000,64000,85000,100000,120000,140000,165000,195000,225000,265000,305000,355000];
+const ASI_LEVELS = [4,8,12,16,19]; // standard Ability Score Improvement levels for most classes
+function levelForXp(xp){
+  let lvl = 1;
+  for(let i=0;i<XP_THRESHOLDS.length;i++){ if(xp >= XP_THRESHOLDS[i]) lvl = i+1; }
+  return Math.min(lvl, 20);
+}
+function xpForLevel(level){ return XP_THRESHOLDS[Math.min(Math.max(level,1),20)-1]; }
+function proficiencyBonusForLevel(level){
+  if(level>=17) return 6;
+  if(level>=13) return 5;
+  if(level>=9) return 4;
+  if(level>=5) return 3;
+  return 2;
+}
+function abilityMod(score){ return Math.floor((score-10)/2); }
 function applyHpDelta(delta){
   const c = state.character;
+  const wasAbove0 = c.hpCurrent > 0;
   c.hpCurrent = Math.max(0, Math.min(c.hpMax, c.hpCurrent + delta));
   c.hp = hpLabel(c.hpCurrent, c.hpMax);
+  if(c.hpCurrent > 0){
+    // Any real healing above 0 clears a dying/stable state — real 5e rule.
+    c.deathSaves = { successes:0, failures:0 };
+    c.stable = false;
+    state.pendingDeathSave = false;
+  } else if(c.hpCurrent <= 0 && wasAbove0 && !c.stable){
+    state.pendingDeathSave = true;
+  }
+}
+// A small hand-defined table of level-gated unlocks for Raken specifically — there's no class
+// system here to hand out real features like Extra Attack, so this is the practical equivalent:
+// new or upgraded attacks/skills at specific levels, the actual source of most 5e power growth.
+const FEATURE_TABLE = [
+  { level:3, type:'new_attack', attack:{ name:'Overcharge Pulse', type:'ranged', stat:'int', damageDie:'d8', damageType:'force', resourceCost:{ magicReserve:2 }, desc:'A riskier, harder discharge — bigger hit, bigger drain.' } },
+  { level:5, type:'upgrade_attack', name:'Improvised Strike', newDie:'d6' },
+  { level:7, type:'new_skill', skill:{ name:'Overclock', stat:'con', proficient:true, desc:'Push yourself or your gear past safe limits for a burst of performance.' } },
+  { level:10, type:'upgrade_attack', name:'Focus Pulse', newDie:'d8' },
+];
+function applyXpDelta(delta){
+  const c = state.character;
+  const oldLevel = c.level;
+  c.xp = Math.max(0, c.xp + delta); // XP is a cumulative running total, same as real 5e — never subtracted per level
+  const newLevel = levelForXp(c.xp);
+  const levelUps = [];
+  const featureNotes = [];
+  for(let lvl = oldLevel+1; lvl <= newLevel; lvl++){
+    const conMod = abilityMod(c.stats.con);
+    const hpGain = Math.max(1, Math.ceil((c.hitDie+1)/2) + conMod); // average hit-die roll, rounded up — real 5e convention (d8 -> 5)
+    c.hpMax += hpGain;
+    if(ASI_LEVELS.includes(lvl)){
+      state.pendingStatPoint += 2; // +2 to one score, or +1/+1 to two — same total either way
+      state.pendingSkillChoice += 1; // homebrew addition since there's no class/background to grant fixed proficiencies
+    }
+    if(lvl % 2 === 0) c.magicReserveMax += 1;
+    FEATURE_TABLE.filter(f=>f.level===lvl).forEach(f=>{
+      if(f.type==='new_attack'){ c.attacks.push({...f.attack}); featureNotes.push(`Learned a new attack: ${f.attack.name}.`); }
+      else if(f.type==='upgrade_attack'){ const a=c.attacks.find(x=>x.name===f.name); if(a){ a.damageDie=f.newDie; featureNotes.push(`${f.name} upgraded to ${f.newDie} damage.`); } }
+      else if(f.type==='new_skill'){ c.skills.push({...f.skill}); featureNotes.push(`Learned a new skill: ${f.skill.name}.`); }
+    });
+    levelUps.push(lvl);
+  }
+  c.level = newLevel;
+  if(levelUps.length){
+    c.hpCurrent = c.hpMax; // level-up heals to full — a real, felt reward, not just a bigger number
+    c.hp = hpLabel(c.hpCurrent, c.hpMax);
+  }
+  return { levelUps, featureNotes };
 }
 function magicMod(){
   if(state.character.magicCharge==='wet') return 3;
@@ -409,7 +558,7 @@ async function loadSaveFilesFromDisk(){
     tryFetchText(SAVE_FILE_PATHS.session_log),
   ]);
   let found = false;
-  if(char){ Object.assign(state.character, parseCharacterSheetMd(char)); found = true; }
+  if(char){ applyCharacterSheetParse(parseCharacterSheetMd(char)); found = true; }
   if(wb){ Object.assign(state.worldBible, parseWorldBibleMd(wb)); found = true; }
   if(party){ Object.assign(state.party, parsePartyMd(party)); found = true; }
   if(log){
@@ -459,6 +608,9 @@ async function bootSaveFiles(){
   let restoredCombat = null;
   let restoredItemClaim = null;
   let restoredRoll = null;
+  let restoredQuestOverflow = null;
+  let restoredPayment = null;
+  let restoredStatPoint = 0;
   try{
     const savedChat = await storageGet('veyrune:chat_transcript');
     if(savedChat){
@@ -472,6 +624,9 @@ async function bootSaveFiles(){
         restoredCombat = parsed.combat || null;
         restoredItemClaim = parsed.pendingItemClaim || null;
         restoredRoll = parsed.pendingRoll || null;
+        restoredQuestOverflow = parsed.pendingQuestOverflow || null;
+        restoredPayment = parsed.pendingPayment || null;
+        restoredStatPoint = parsed.pendingStatPoint || 0;
       }
     }
   }catch(e){ /* fine, fall through to normal boot */ }
@@ -506,6 +661,9 @@ async function bootSaveFiles(){
     if(restoredCombat) state.combat = restoredCombat;
     if(restoredItemClaim) state.pendingItemClaim = restoredItemClaim;
     if(restoredRoll) state.pendingRoll = restoredRoll; // composer shows a Roll button — doesn't auto-open the modal
+    if(restoredQuestOverflow) state.pendingQuestOverflow = restoredQuestOverflow;
+    if(restoredPayment) state.pendingPayment = restoredPayment;
+    if(restoredStatPoint) state.pendingStatPoint = restoredStatPoint;
 
     // If the very last thing in the transcript is the player's own message with nothing
     // after it, the DM never actually answered — most likely a refresh happened mid-call.
@@ -571,7 +729,10 @@ function scheduleChatPersist(){
       lastOptions: state.lastOptions,
       combat: state.combat,
       pendingItemClaim: state.pendingItemClaim,
-      pendingRoll: state.pendingRoll
+      pendingRoll: state.pendingRoll,
+      pendingQuestOverflow: state.pendingQuestOverflow,
+      pendingPayment: state.pendingPayment,
+      pendingStatPoint: state.pendingStatPoint
     }));
   }, 600);
 }
@@ -588,12 +749,14 @@ function render(){
       <div class="top-row">
         ${glyph()}
         <div class="stats">
-          <span>❤ <b>${state.character.hpCurrent}/${state.character.hpMax} · ${state.character.hp}</b></span>
+          <span>❤ <b>${state.character.hpCurrent}/${state.character.hpMax} · ${state.character.hp}${state.character.stable?' (stable)':''}</b></span>
+          <span>🛡️ <b>AC ${armorClass()}</b></span>
           <span>💧🪨 <b>${magicLabel()}</b></span>
           <span>🪙 <b>${state.character.coins}</b></span>
           <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
         </div>
       </div>
+      ${(state.character.conditions.length || state.character.exhaustion>0) ? `<div class="quest-row" style="color:var(--danger);">⚠️ ${[...state.character.conditions, ...(state.character.exhaustion>0?[`Exhaustion ${state.character.exhaustion}`]:[])].map(escHtml).join(' · ')}</div>` : ''}
       <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
     </div>
     ${isChat ? `
@@ -602,9 +765,25 @@ function render(){
         : state.chat.map(renderChatItem).join('') + (state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : '')
       }</div>
       ${state.combat.active ? renderEnemyStrip() : ''}
-      ${state.lastOptions.length && !state.loading && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
+      ${state.lastOptions.length && !state.loading && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow && !state.pendingPayment && !state.pendingStatPoint && !state.pendingDeathSave && !state.pendingSkillChoice ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
       <div class="composer ${state.oocMode ? 'ooc-active' : ''}">
-        ${state.pendingItemClaim ? `
+        ${state.pendingDeathSave ? `
+          <button class="claim-item-btn" style="background:var(--danger); border-color:var(--danger); animation:none;" onclick="openDeathSaveModal()">
+            💀 Death Saving Throw Required
+          </button>
+        ` : state.pendingSkillChoice ? `
+          <button class="claim-item-btn" onclick="openSkillChoiceModal()">
+            🌟 Choose Skill Proficiency (${state.pendingSkillChoice})
+          </button>
+        ` : state.pendingStatPoint ? `
+          <button class="claim-item-btn" onclick="openStatPointModal()">
+            🎉 Allocate Stat Point${state.pendingStatPoint>1?'s':''} (${state.pendingStatPoint})
+          </button>
+        ` : state.pendingPayment ? `
+          <button class="claim-item-btn" onclick="openPaymentModal()">
+            💰 Pay ${state.pendingPayment.amount} coils? — ${escHtml(state.pendingPayment.reason)}
+          </button>
+        ` : state.pendingItemClaim ? `
           <button class="claim-item-btn" onclick="openPendingItemClaim()">
             ${state.pendingItemClaim.kind==='item' ? '🎁 Claim Item: '+escHtml(state.pendingItemClaim.item.name) : '🎒 Claim '+state.pendingItemClaim.items.length+' Item'+(state.pendingItemClaim.items.length>1?'s':'')}
           </button>
@@ -617,10 +796,10 @@ function render(){
             ❓ ${state.pendingQuestOverflow.category==='side'?'Side Quest':'Request'} Offered: ${escHtml(state.pendingQuestOverflow.newQuest.title)}
           </button>
         ` : `
-          <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting?'disabled':''}>⚄</button>
-          <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting?'disabled':''}>OOC</button>
-          <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':(state.oocMode?'Ask the DM (OOC)…':'What do you do?')}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting?'disabled':''}>
-          <button class="icon-btn send" title="Send" onclick="submitFreeform()" ${state.booting?'disabled':''}>SEND</button>
+          <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting||state.loading?'disabled':''}>⚄</button>
+          <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting||state.loading?'disabled':''}>OOC</button>
+          <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':state.loading?'Waiting for the DM…':(state.oocMode?'Ask the DM (OOC)…':'What do you do?')}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting||state.loading?'disabled':''}>
+          <button class="icon-btn send" title="Send" onclick="submitFreeform()" ${state.booting||state.loading?'disabled':''}>SEND</button>
         `}
       </div>
     ` : `<div class="tab-panel">${renderTabPanel()}</div>`}
@@ -739,6 +918,17 @@ function isLastPlayerMessage(idx){
   }
   return true;
 }
+function isWithinLastPlayerMessages(idx, n){
+  // Delete gets a slightly wider window than Edit (last N sent messages, not just the last
+  // one) — still bounded so deleting can't reach arbitrarily far back into the conversation.
+  const item = state.chat[idx];
+  if(!item || (item.type!=='player' && item.type!=='player-ooc')) return false;
+  let countAfter = 0;
+  for(let i=idx+1; i<state.chat.length; i++){
+    if(state.chat[i].type==='player' || state.chat[i].type==='player-ooc') countAfter++;
+  }
+  return countAfter < n;
+}
 function openMessageMenu(idx){
   const item = state.chat[idx];
   if(!item || (item.type!=='player' && item.type!=='player-ooc' && item.type!=='roll')) return;
@@ -761,15 +951,16 @@ function renderMessageMenuModal(m){
     </div>`;
   }
   const canEdit = isLastPlayerMessage(m.idx);
+  const canDelete = item.type==='roll' || isWithinLastPlayerMessages(m.idx, 2);
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="sheet">
       <h3>${item.type==='roll' ? 'Dice Roll' : 'Your Message'}</h3>
       <div class="flavor">"${escHtml(item.text)}"</div>
-      ${!canEdit && item.type!=='roll' ? `<div class="flavor" style="font-size:12px; opacity:0.7;">Editing is only available for the most recent message you sent — this one's further back, so only Delete is offered here.</div>` : ''}
+      ${!canEdit && item.type!=='roll' ? `<div class="flavor" style="font-size:12px; opacity:0.7;">Editing is only available for the most recent message you sent.${canDelete ? '' : ' Delete is only available for your last 2 sent messages.'}</div>` : ''}
       <div class="sheet-actions">
         <button class="btn-secondary" onclick="closeModal()">Cancel</button>
         ${canEdit ? `<button class="btn-primary" onclick="startMessageEdit()">Edit</button>` : ''}
-        <button class="btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="deleteMessage()">Delete</button>
+        ${canDelete ? `<button class="btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="deleteMessage()">Delete</button>` : ''}
       </div>
     </div>
   </div>`;
@@ -814,16 +1005,54 @@ function saveMessageEdit(){
   }
 }
 function deleteMessage(){
-  state.chat.splice(state.modal.idx, 1);
+  const idx = state.modal.idx;
+  const item = state.chat[idx];
+  if(!item){ state.modal = null; render(); return; }
+
+  if(item.type === 'roll'){
+    // Just a displayed dice result, not a real action with side effects — simple removal.
+    state.chat.splice(idx, 1);
+    state.modal = null;
+    render();
+    return;
+  }
+
+  if(!isWithinLastPlayerMessages(idx, 2)){
+    // Shouldn't be reachable through the UI (the button is hidden for this case),
+    // but refuse it here too rather than trusting the caller.
+    state.modal = null; render(); return;
+  }
+
+  if(item.preTurnSnapshot){
+    // Undo whatever this message (and anything after it) caused, same restore used for
+    // editing — coins, HP, quests, inventory, all rolled back to right before it was sent.
+    const snap = item.preTurnSnapshot;
+    state.character = JSON.parse(JSON.stringify(snap.character));
+    state.worldBible = JSON.parse(JSON.stringify(snap.worldBible));
+    state.party = JSON.parse(JSON.stringify(snap.party));
+    state.sessionMeta = JSON.parse(JSON.stringify(snap.sessionMeta));
+    state.combat = JSON.parse(JSON.stringify(snap.combat));
+    state.quests = JSON.parse(JSON.stringify(snap.quests));
+  }
+  // Drop this message and everything after it — the DM's old response (and anything past
+  // that) was answering something that no longer exists, so it can't be left dangling.
+  state.chat = state.chat.slice(0, idx);
+  state.pendingItemClaim = null;
+  state.pendingRoll = null;
+  state.pendingQuestOverflow = null;
+  state.lastOptions = [];
   state.modal = null;
+  persistSaveFiles();
   render();
 }
 function renderEnemyStrip(){
   const c = state.combat;
   const pct = c.creatureMaxHp>0 ? Math.max(0,(c.creatureHp/c.creatureMaxHp)*100) : 0;
+  const effects = (c.statusEffects||[]).map(e=>`${escHtml(e.icon||'●')} ${escHtml(e.name)} (${e.turnsLeft})`).join(' · ');
   return `<div class="enemy-strip">
     ⚔️ ${escHtml(c.creatureName)} — ${c.creatureHp}/${c.creatureMaxHp} HP
     <div class="hp-bar"><div class="hp-fill" style="width:${pct}%"></div></div>
+    ${effects ? `<div style="margin-top:4px; font-size:10px; opacity:0.85;">${effects}</div>` : ''}
   </div>`;
 }
 
@@ -844,6 +1073,10 @@ function renderModal(){
   if(m.kind==='items-gained') return renderItemsGainedModal(m);
   if(m.kind==='item-info') return renderItemInfoModal(m);
   if(m.kind==='quest-overflow') return renderQuestOverflowModal();
+  if(m.kind==='payment') return renderPaymentModal();
+  if(m.kind==='stat-point') return renderStatPointModal();
+  if(m.kind==='death-save') return renderDeathSaveModal();
+  if(m.kind==='skill-choice') return renderSkillChoiceModal();
   return '';
 }
 function renderResetConfirmModal(){
@@ -876,19 +1109,54 @@ function openDiceModal(requirement){
   state.modal = { kind:'dice', requirement, chosenDie: requirement ? requirement.die : 'd20', result:null };
   render();
 }
+const STAT_LABELS = { str:'Strength', dex:'Dexterity', con:'Constitution', int:'Intelligence', wis:'Wisdom', cha:'Charisma' };
+function chooseSkillProficiency(name){
+  if(!state.pendingSkillChoice) return;
+  const skill = state.character.skills.find(s=>s.name===name);
+  if(!skill || skill.proficient) return;
+  skill.proficient = true;
+  state.pendingSkillChoice -= 1;
+  persistSaveFiles();
+  if(state.pendingSkillChoice <= 0 && state.modal && state.modal.kind==='skill-choice') state.modal = null;
+  render();
+}
+function rollModifierFor(requirement){
+  if(requirement && requirement.stat && state.character.stats[requirement.stat] != null){
+    const c = state.character;
+    const base = abilityMod(c.stats[requirement.stat]);
+    if(requirement.save){
+      const proficient = !!c.saveProficiencies[requirement.stat];
+      const mod = base + (proficient ? proficiencyBonusForLevel(c.level) : 0);
+      return { mod, label: `${STAT_LABELS[requirement.stat]} Save${proficient ? ' (proficient)' : ''}` };
+    }
+    if(requirement.skill){
+      const skill = c.skills.find(s=>s.name===requirement.skill);
+      const proficient = skill && skill.proficient;
+      const mod = base + (proficient ? proficiencyBonusForLevel(c.level) : 0);
+      return { mod, label: `${skill ? skill.name : STAT_LABELS[requirement.stat]}${proficient ? ' (proficient)' : ' (untrained)'}` };
+    }
+    // A bare ability check — no proficiency bonus unless a skill/save is actually proficient, same as real D&D.
+    return { mod: base, label: `${STAT_LABELS[requirement.stat]} (untrained check)` };
+  }
+  return { mod: magicMod(), label: 'grounding' };
+}
+function armorClass(){ return 10 + abilityMod(state.character.stats.dex) + (state.character.armorBonus||0); }
+function passivePerception(){ return 10 + abilityMod(state.character.stats.wis); }
 function renderDiceModal(m){
   const dice = ['d4','d6','d8','d10','d12','d20'];
   const isRequested = !!m.requirement;
+  const modInfo = isRequested ? rollModifierFor(m.requirement) : null;
+  const advDisadv = isRequested && m.chosenDie==='d20' ? (m.requirement.advantage && !m.requirement.disadvantage ? 'advantage' : (m.requirement.disadvantage && !m.requirement.advantage ? 'disadvantage' : null)) : null;
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="sheet">
       <h3>${isRequested ? 'DM Requests a Roll' : 'Quick Roll'}</h3>
       <div class="flavor">${isRequested ? escHtml(m.requirement.reason || 'Roll to see what happens.') : 'Not sent to the DM — just for you.'}</div>
-      ${!isRequested ? `<div class="die-grid">${dice.map(d=>`<button class="${m.chosenDie===d?'active':''}" onclick="pickDie('${d}')">${d}</button>`).join('')}</div>` : `<div class="flavor" style="margin-top:-8px;">Rolling ${m.requirement.die}${m.requirement.die==='d20'?` with your ${magicMod()>=0?'+':''}${magicMod()} grounding modifier`:''}.</div>`}
+      ${!isRequested ? `<div class="die-grid">${dice.map(d=>`<button class="${m.chosenDie===d?'active':''}" onclick="pickDie('${d}')">${d}</button>`).join('')}</div>` : `<div class="flavor" style="margin-top:-8px;">Rolling ${m.requirement.die} with your ${modInfo.mod>=0?'+':''}${modInfo.mod} ${modInfo.label} modifier.${advDisadv?` Rolling with ${advDisadv} — two dice, taking the ${advDisadv==='advantage'?'higher':'lower'}.`:''}</div>`}
       ${m.result===null ? `
         <div class="sheet-actions"><button class="btn-primary" onclick="doRoll()">Roll ${m.chosenDie}</button></div>
       ` : `
         <div class="roll-result">${m.result.total}</div>
-        <div class="roll-detail">rolled ${m.result.roll}${m.result.mod?` ${m.result.mod>=0?'+':''}${m.result.mod}`:''} on ${m.chosenDie}</div>
+        <div class="roll-detail">${m.result.rollsShown && m.result.rollsShown.length>1 ? `rolled ${m.result.rollsShown.join(' & ')}, took ${m.result.roll}` : `rolled ${m.result.roll}`}${m.result.mod?` ${m.result.mod>=0?'+':''}${m.result.mod}`:''} on ${m.chosenDie}</div>
         <div class="sheet-actions"><button class="btn-primary" onclick="confirmRoll()">${isRequested ? 'Send to DM' : 'Done'}</button></div>
       `}
     </div>
@@ -897,18 +1165,28 @@ function renderDiceModal(m){
 function pickDie(d){ state.modal.chosenDie = d; render(); }
 function doRoll(){
   const m = state.modal;
+  const req = m.requirement;
   const sides = parseInt(m.chosenDie.slice(1),10);
-  const roll = rollDie(sides);
-  const mod = (m.chosenDie==='d20') ? magicMod() : 0;
-  m.result = { roll, mod, total: roll+mod };
+  const advDisadv = req && m.chosenDie==='d20' ? (req.advantage && !req.disadvantage ? 'advantage' : (req.disadvantage && !req.advantage ? 'disadvantage' : null)) : null;
+  let roll, rollsShown;
+  if(advDisadv){
+    const r1 = rollDie(sides), r2 = rollDie(sides);
+    roll = advDisadv==='advantage' ? Math.max(r1,r2) : Math.min(r1,r2);
+    rollsShown = [r1,r2];
+  } else {
+    roll = rollDie(sides);
+    rollsShown = [roll];
+  }
+  const mod = req ? rollModifierFor(req).mod : (m.chosenDie==='d20' ? magicMod() : 0);
+  m.result = { roll, mod, total: roll+mod, rollsShown };
   render();
 }
 function confirmRoll(){
   const m = state.modal;
-  const label = `Rolled ${m.chosenDie}: ${m.result.roll}${m.result.mod?` (${m.result.mod>=0?'+':''}${m.result.mod} = ${m.result.total})`:''}`;
+  const label = `Rolled ${m.chosenDie}${m.result.rollsShown.length>1?` (${m.result.rollsShown.join('/')})`:''}: ${m.result.roll}${m.result.mod?` (${m.result.mod>=0?'+':''}${m.result.mod} = ${m.result.total})`:''}`;
   state.chat.push({ type:'roll', text: label });
   if(m.requirement){
-    const resolution = { die:m.chosenDie, roll:m.result.roll, modifier:m.result.mod, total:m.result.total, reason:m.requirement.reason };
+    const resolution = { die:m.chosenDie, roll:m.result.roll, modifier:m.result.mod, total:m.result.total, reason:m.requirement.reason, stat_used: m.requirement.stat || null, skill_used: m.requirement.skill || null, was_save: !!m.requirement.save };
     state.modal = null;
     state.pendingRoll = null;
     sendAction(`(rolled for: ${m.requirement.reason})`, { resolution });
@@ -999,6 +1277,146 @@ function toggleQuestPin(category, title){
     if(pinnedCount >= 2) return; // cap reached — silently ignore, button just won't visually change
   }
   entry.pinned = !entry.pinned;
+  persistSaveFiles();
+  render();
+}
+function openDeathSaveModal(){
+  if(!state.pendingDeathSave) return;
+  state.modal = { kind:'death-save' };
+  render();
+}
+function renderDeathSaveModal(){
+  const ds = state.character.deathSaves;
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Death Saving Throw</h3>
+      <div class="flavor">At 0 HP. Rolling a d20: 10 or higher is a success, under 10 is a failure. A natural 20 revives you outright at 1 HP; a natural 1 counts as two failures. Three successes stabilizes you; three failures ends it.</div>
+      <div style="display:flex; justify-content:space-between; font-family:var(--mono); font-size:13px; margin:12px 0;">
+        <span style="color:var(--teal);">✅ Successes: ${ds.successes}/3</span>
+        <span style="color:var(--danger);">❌ Failures: ${ds.failures}/3</span>
+      </div>
+      <div class="sheet-actions"><button class="btn-primary" onclick="rollDeathSave()">Roll d20</button></div>
+    </div>
+  </div>`;
+}
+function rollDeathSave(){
+  const c = state.character;
+  const roll = rollDie(20);
+  let note;
+  if(roll === 20){
+    c.hpCurrent = 1; c.hp = hpLabel(1, c.hpMax);
+    c.deathSaves = { successes:0, failures:0 }; c.stable = false;
+    state.pendingDeathSave = false;
+    note = `🎲 Death save: natural 20 — back up with 1 HP!`;
+  } else if(roll === 1){
+    c.deathSaves.failures += 2;
+    note = `🎲 Death save: natural 1 — counts as 2 failures (${c.deathSaves.failures}/3).`;
+  } else if(roll >= 10){
+    c.deathSaves.successes += 1;
+    note = `🎲 Death save: ${roll} — success (${c.deathSaves.successes}/3).`;
+  } else {
+    c.deathSaves.failures += 1;
+    note = `🎲 Death save: ${roll} — failure (${c.deathSaves.failures}/3).`;
+  }
+  if(c.deathSaves.successes >= 3){
+    c.stable = true;
+    state.pendingDeathSave = false;
+    note += ' Stabilized — still at 0 HP, but no longer actively dying.';
+  } else if(c.deathSaves.failures >= 3){
+    state.pendingDeathSave = false;
+    note += state.settings.permadeath ? ' Three failures. This is the end.' : ' Three failures — narratively critical, but Hardcore Mode is off, so the story finds a way through.';
+  }
+  state.chat.push({ type:'note', text:note });
+  if(!state.pendingDeathSave) state.modal = null;
+  persistSaveFiles();
+  render();
+}
+function openSkillChoiceModal(){
+  if(!state.pendingSkillChoice) return;
+  state.modal = { kind:'skill-choice' };
+  render();
+}
+function renderSkillChoiceModal(){
+  const c = state.character;
+  const untrained = c.skills.filter(s=>!s.proficient);
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Choose a New Proficiency</h3>
+      <div class="flavor">${state.pendingSkillChoice} choice${state.pendingSkillChoice>1?'s':''} remaining. Becoming proficient adds your proficiency bonus (+${proficiencyBonusForLevel(c.level)} right now) to rolls using that skill.</div>
+      ${untrained.length ? untrained.map(s=>`
+        <button class="pill-btn" style="display:block; width:100%; text-align:left; margin-bottom:8px;" onclick='chooseSkillProficiency(${escAttr(JSON.stringify(s.name))})'>
+          <div>${escHtml(s.name)} <span style="opacity:0.7;">(${STAT_LABELS[s.stat]})</span></div>
+          <div style="font-size:11px; opacity:0.8; margin-top:2px;">${escHtml(s.desc)}</div>
+        </button>
+      `).join('') : `<div class="flavor">All skills are already proficient.</div>`}
+      <div class="sheet-actions"><button class="btn-secondary" onclick="closeModal()">Do this later</button></div>
+    </div>
+  </div>`;
+}
+function openStatPointModal(){
+  if(!state.pendingStatPoint) return;
+  state.modal = { kind:'stat-point' };
+  render();
+}
+function renderStatPointModal(){
+  const s = state.character.stats;
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Ability Score Improvement</h3>
+      <div class="flavor">${state.pendingStatPoint} point${state.pendingStatPoint>1?'s':''} remaining — put both into one score, or split across two. Tap a score to add +1 (capped at 20).</div>
+      <div class="ref-row" style="flex-direction:column; align-items:stretch;">
+        ${Object.keys(STAT_LABELS).map(key=>`
+          <button class="pill-btn" style="margin-bottom:8px; display:flex; justify-content:space-between;" onclick="allocateStatPoint('${key}')" ${s[key]>=20?'disabled':''}>
+            <span>${STAT_LABELS[key]}</span><span>${s[key]} (${abilityMod(s[key])>=0?'+':''}${abilityMod(s[key])}) → ${Math.min(20,s[key]+1)} (${abilityMod(Math.min(20,s[key]+1))>=0?'+':''}${abilityMod(Math.min(20,s[key]+1))})</span>
+          </button>
+        `).join('')}
+      </div>
+      <div class="sheet-actions"><button class="btn-secondary" onclick="closeModal()">Do this later</button></div>
+    </div>
+  </div>`;
+}
+function allocateStatPoint(key){
+  if(!state.pendingStatPoint) return;
+  if(state.character.stats[key] >= 20) return; // real 5e cap via this method
+  state.character.stats[key] += 1;
+  state.pendingStatPoint -= 1;
+  persistSaveFiles();
+  if(state.pendingStatPoint <= 0){ state.modal = null; }
+  render();
+}
+function openPaymentModal(){
+  if(!state.pendingPayment) return;
+  state.modal = { kind:'payment' };
+  render();
+}
+function renderPaymentModal(){
+  const p = state.pendingPayment;
+  if(!p) return '';
+  const afterBalance = Math.max(0, state.character.coins - p.amount);
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Confirm Payment</h3>
+      <div style="font-family:var(--mono); color:var(--brass); font-size:22px; margin-bottom:6px;">🪙 ${p.amount} coils</div>
+      <div class="flavor">${escHtml(p.reason)}</div>
+      <div class="flavor" style="font-size:12px;">Current balance: ${state.character.coins} coils → ${afterBalance} after paying.</div>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="resolvePayment(false)">Decline</button>
+        <button class="btn-primary" onclick="resolvePayment(true)">Approve</button>
+      </div>
+    </div>
+  </div>`;
+}
+function resolvePayment(approve){
+  const p = state.pendingPayment;
+  if(!p) return;
+  if(approve){
+    state.character.coins = Math.max(0, state.character.coins - p.amount);
+    state.chat.push({ type:'note', text:`🪙 -${p.amount} coils (now ${state.character.coins}) — ${p.reason}` });
+  } else {
+    state.chat.push({ type:'note', text:`Declined to pay ${p.amount} coils for: ${p.reason}` });
+  }
+  state.pendingPayment = null;
+  state.modal = null;
   persistSaveFiles();
   render();
 }
@@ -1117,15 +1535,43 @@ async function open5e(path){
 }
 const CREATURE_TYPES = ['aberration','beast','celestial','construct','dragon','elemental','fey','fiend','giant','humanoid','monstrosity','ooze','plant','undead'];
 
+// Real D&D 5e SRD conditions — small, fixed list, embedded directly rather than fetched,
+// since it never changes and this avoids any external dependency for core rules reference.
+const CONDITIONS_DATA = [
+  { name:'Blinded', desc:"Can't see, automatically fails any check requiring sight. Attack rolls against the creature have advantage; its own attack rolls have disadvantage." },
+  { name:'Charmed', desc:"Can't attack the charmer or target them with harmful abilities. The charmer has advantage on social checks to interact with the creature." },
+  { name:'Deafened', desc:"Can't hear, automatically fails any check requiring hearing." },
+  { name:'Frightened', desc:"Disadvantage on ability checks and attack rolls while the source of fear is in sight. Can't willingly move closer to the source of fear." },
+  { name:'Grappled', desc:"Speed becomes 0. Ends if the grappler is incapacitated, or if something removes the grappled creature from the grappler's reach." },
+  { name:'Incapacitated', desc:"Can't take actions or reactions." },
+  { name:'Invisible', desc:"Impossible to see without special means. Attack rolls against the creature have disadvantage; its own attack rolls have advantage." },
+  { name:'Paralyzed', desc:"Incapacitated, can't move or speak. Automatically fails Strength and Dexterity saves. Attacks against have advantage, and any hit from within 5 feet is a critical hit." },
+  { name:'Petrified', desc:"Transformed to stone, incapacitated, can't move or speak, unaware of surroundings. Attacks against have advantage, automatically fails Str/Dex saves. Resistant to all damage, immune to poison and disease." },
+  { name:'Poisoned', desc:"Disadvantage on attack rolls and ability checks." },
+  { name:'Prone', desc:"Can only crawl unless it stands up. Disadvantage on attack rolls. Attacks against have advantage if the attacker is within 5 feet, disadvantage otherwise." },
+  { name:'Restrained', desc:"Speed becomes 0. Disadvantage on attack rolls and Dexterity saves. Attack rolls against the creature have advantage." },
+  { name:'Stunned', desc:"Incapacitated, can't move, can speak only falteringly. Automatically fails Strength and Dexterity saves. Attacks against have advantage." },
+  { name:'Unconscious', desc:"Incapacitated, can't move or speak, unaware of surroundings, drops what it's holding, falls prone. Automatically fails Str/Dex saves. Attacks against have advantage, and any hit from within 5 feet is a critical hit." },
+  { name:'Exhaustion', desc:"Six cumulative levels, tracked separately as a number (not a simple on/off condition). 1: disadvantage on ability checks. 2: speed halved. 3: disadvantage on attack rolls and saves. 4: HP maximum halved. 5: speed reduced to 0. 6: death. A long rest reduces it by 1 level." },
+];
 function renderLibraryTab(){
   return `
     <h2>${glyph('tab-icon-inline')} Library</h2>
     <div class="ref-row" style="margin-bottom:16px;">
       <button class="pill-btn ${state.library.section==='bestiary'?'':'btn-secondary'}" style="${state.library.section==='bestiary'?'':'background:transparent;'}" onclick="setLibrarySection('bestiary')">Bestiary</button>
       <button class="pill-btn ${state.library.section==='spells'?'':'btn-secondary'}" style="${state.library.section==='spells'?'':'background:transparent;'}" onclick="setLibrarySection('spells')">Spells</button>
+      <button class="pill-btn ${state.library.section==='conditions'?'':'btn-secondary'}" style="${state.library.section==='conditions'?'':'background:transparent;'}" onclick="setLibrarySection('conditions')">Conditions</button>
     </div>
-    ${state.library.section==='bestiary' ? renderBestiaryTab(true) : renderSpellsTab(true)}
+    ${state.library.section==='bestiary' ? renderBestiaryTab(true) : state.library.section==='spells' ? renderSpellsTab(true) : renderConditionsLibrary()}
   `;
+}
+function renderConditionsLibrary(){
+  return CONDITIONS_DATA.map(c=>`
+    <div class="ref-card">
+      <div class="rc-name">${escHtml(c.name)}</div>
+      <div class="rc-meta" style="margin-top:4px; line-height:1.6;">${escHtml(c.desc)}</div>
+    </div>
+  `).join('');
 }
 function setLibrarySection(s){ state.library.section = s; render(); }
 function renderQuestReward(reward){
@@ -1284,23 +1730,51 @@ function renderSpellInfoModal(m){
   </div>`;
 }
 
+function itemLedClass(name, desc){
+  const text = (name + ' ' + (desc||'')).toLowerCase();
+  if(/reactive|charged|synced|warm|active/.test(text)) return 'led-teal';
+  if(/broken|depleted|drained|cracked|dead|damaged/.test(text)) return 'led-danger';
+  if(/dormant|inert|locked|sealed/.test(text)) return 'led-dim';
+  return 'led-brass';
+}
+function itemRow(name){
+  const desc = state.character.itemInfo && state.character.itemInfo[name];
+  return `<div class="item-row ${itemLedClass(name, desc)}" onclick='openItemInfo(${escAttr(JSON.stringify(name))})'>
+    <div class="item-row-name">${escHtml(name)}</div>
+    <span class="item-row-arrow">›</span>
+  </div>`;
+}
+function slotRow(label, itemName){
+  return `<div class="item-row ${itemName ? itemLedClass(itemName, state.character.itemInfo && state.character.itemInfo[itemName]) : 'led-dim'}" ${itemName ? `onclick='openItemInfo(${escAttr(JSON.stringify(itemName))})'` : ''}>
+    <div class="item-row-name"><span style="color:var(--cream-dim); font-family:var(--mono); font-size:9px; letter-spacing:1px; margin-right:8px;">${label.toUpperCase()}</span>${itemName ? escHtml(itemName) : '<span style="opacity:0.5; font-style:italic;">Empty</span>'}</div>
+    ${itemName ? '<span class="item-row-arrow">›</span>' : ''}
+  </div>`;
+}
 function renderInventoryTab(){
   const c = state.character;
   return `
     <h2>${glyph('tab-icon-inline')} Inventory</h2>
     <div class="flavor" style="margin-bottom:12px;">Read-only — equip, unequip, drop, or pick up items by describing it to the DM in Chat.</div>
-    <div class="subhead" style="margin-top:0;">Equipped</div>
-    <ul class="inv-list">
-      ${c.equipped.map(item=>`<li style="display:flex; justify-content:space-between; align-items:center;"><span>⚔️ ${escHtml(item)}</span><button class="inv-remove" style="color:var(--teal);" onclick='openItemInfo(${escAttr(JSON.stringify(item))})'>info</button></li>`).join('') || '<li class="flavor" style="border:none;">Nothing equipped.</li>'}
-    </ul>
-    <div class="subhead">Carried</div>
-    <ul class="inv-list">
-      ${c.inventory.map(item=>`<li style="display:flex; justify-content:space-between; align-items:center;"><span>${escHtml(item)}</span><button class="inv-remove" style="color:var(--teal);" onclick='openItemInfo(${escAttr(JSON.stringify(item))})'>info</button></li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
-    </ul>
+
+    <div class="subhead" style="margin-top:0;">Equipment Slots</div>
+    ${slotRow('Head', c.equipment.head)}
+    ${slotRow('Body', c.equipment.body)}
+    ${slotRow('Feet', c.equipment.feet)}
+    ${slotRow('Accessory', c.equipment.accessory1)}
+    ${slotRow('Accessory', c.equipment.accessory2)}
+    <div class="subhead" style="margin-top:14px;">Hands (${handsUsed()}/${handCapacity()})</div>
+    ${c.hands.length ? c.hands.map(h=>`${itemRow(h.name)}`).join('') : `<div class="item-row led-dim"><div class="item-row-name"><span style="opacity:0.5; font-style:italic;">Both hands free</span></div></div>`}
+    ${c.extraHandCapacity ? `<div class="flavor" style="font-size:11px; margin-top:4px;">+${c.extraHandCapacity} extra hand capacity active (special ability).</div>` : ''}
+
+    <div class="subhead">Carried (${c.inventory.length})</div>
+    ${c.inventory.length ? c.inventory.map(itemRow).join('') : `<div class="flavor" style="border:none;">Empty.</div>`}
+
     <div class="subhead">Stashed Elsewhere</div>
-    <ul class="inv-list">
-      ${state.stashes.length ? state.stashes.map(s=>`<li><div>${escHtml(s.name)}</div><div class="flavor" style="font-size:11px; margin-top:2px;">Left at: ${escHtml(s.location)}</div></li>`).join('') : '<li class="flavor" style="border:none;">Nothing stashed.</li>'}
-    </ul>
+    ${state.stashes.length ? state.stashes.map(s=>`
+      <div class="item-row led-dim" onclick='openItemInfo(${escAttr(JSON.stringify(s.name))})'>
+        <div class="item-row-name">${escHtml(s.name)}<div style="font-size:10px; color:var(--brass); margin-top:2px;">Left at: ${escHtml(s.location)}</div></div>
+      </div>
+    `).join('') : `<div class="flavor" style="border:none;">Nothing stashed.</div>`}
   `;
 }
 function openItemInfo(name){
@@ -1339,6 +1813,77 @@ function renderStatusTab(){
       <label>Magic Grounding</label>
       <div class="charge-btns">${['water','stone','wet','none'].map(v=>`<button class="${c.magicCharge===v?'active':''}" onclick="state.character.magicCharge='${v}'; render();">${v==='none'?'Ungrounded':v}</button>`).join('')}</div>
       <div class="flavor" style="margin-top:6px; font-size:12px;">Modifier: ${magicMod()>=0?'+':''}${magicMod()} to rolls right now.</div>
+    </div>
+    <div class="status-field">
+      <label>Level ${c.level} · Proficiency +${proficiencyBonusForLevel(c.level)}</label>
+      <div style="font-family:var(--mono); font-size:13px; color:var(--brass);">✨ XP ${c.xp} / ${xpForLevel(c.level+1) || xpForLevel(20)}${c.level>=20?' (max level)':''}</div>
+      <div style="height:6px; background:var(--bg); border:1px solid var(--line); border-radius:2px; overflow:hidden; margin-top:6px;">
+        <div style="height:100%; background:var(--teal); width:${c.level>=20?100:Math.min(100,((c.xp-xpForLevel(c.level))/(xpForLevel(c.level+1)-xpForLevel(c.level)))*100)}%;"></div>
+      </div>
+      ${c.skillPoints ? `<div class="flavor" style="margin-top:6px; font-size:12px;">🔧 ${c.skillPoints} skill point${c.skillPoints>1?'s':''} banked (skills system coming next).</div>` : ''}
+    </div>
+    <div class="status-field">
+      <label>Ability Scores</label>
+      <div class="ref-row" style="flex-wrap:wrap;">
+        ${Object.keys(STAT_LABELS).map(key=>`
+          <div class="ref-card" style="flex:1; min-width:90px; text-align:center; margin-bottom:8px;">
+            <div class="rc-name">${key.toUpperCase()}</div>
+            <div style="font-size:20px; color:var(--brass);">${c.stats[key]}</div>
+            <div class="rc-meta">${abilityMod(c.stats[key])>=0?'+':''}${abilityMod(c.stats[key])}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="flavor" style="margin-top:4px; font-size:12px;">Modifier = floor((score-10)/2), same as real D&D. When a roll uses a stat, the app adds modifier + proficiency bonus automatically.</div>
+    </div>
+    <div class="status-field">
+      <label>Defenses</label>
+      <div class="ref-row">
+        <div class="ref-card" style="flex:1; text-align:center; margin-bottom:0;"><div class="rc-name">Armor Class</div><div style="font-size:22px; color:var(--brass);">🛡️ ${armorClass()}</div></div>
+        <div class="ref-card" style="flex:1; text-align:center; margin-bottom:0;"><div class="rc-name">Passive Perception</div><div style="font-size:22px; color:var(--brass);">👁️ ${passivePerception()}</div></div>
+      </div>
+    </div>
+    <div class="status-field">
+      <label>Saving Throws</label>
+      <div class="ref-row" style="flex-wrap:wrap;">
+        ${Object.keys(STAT_LABELS).map(key=>{
+          const prof = c.saveProficiencies[key];
+          const total = abilityMod(c.stats[key]) + (prof ? proficiencyBonusForLevel(c.level) : 0);
+          return `<div class="ref-card" style="flex:1; min-width:80px; text-align:center; margin-bottom:8px; ${prof?'border-color:var(--teal);':''}">
+            <div class="rc-name">${key.toUpperCase()}</div>
+            <div style="font-size:16px; color:var(--brass);">${total>=0?'+':''}${total}</div>
+            <div class="rc-meta" style="font-size:9px;">${prof?'proficient':'—'}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+    ${(c.conditions.length || c.exhaustion>0) ? `
+    <div class="status-field">
+      <label>Active Conditions</label>
+      ${c.conditions.map(cond=>`<div class="ref-card"><div class="rc-name">${escHtml(cond)}</div></div>`).join('')}
+      ${c.exhaustion>0 ? `<div class="ref-card"><div class="rc-name">Exhaustion — Level ${c.exhaustion}</div></div>` : ''}
+    </div>` : ''}
+    <div class="status-field">
+      <label>Attacks</label>
+      ${c.attacks.map(a=>`
+        <div class="ref-card">
+          <div class="rc-name">${escHtml(a.name)} <span style="color:var(--cream-dim); text-transform:none;">— ${a.type}</span></div>
+          <div class="rc-meta" style="margin-top:4px;">${STAT_LABELS[a.stat]} · ${a.damageDie} + mod, ${a.damageType} damage${a.resourceCost?` · costs ${a.resourceCost.magicReserve} Magic Reserve`:''}</div>
+          <div class="rc-meta" style="margin-top:4px;">${escHtml(a.desc)}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="status-field">
+      <label>Skills</label>
+      <div class="flavor" style="font-size:12px; margin-bottom:8px;">Proficiency is binary, same as real D&D — being proficient adds your current proficiency bonus (+${proficiencyBonusForLevel(c.level)}) to that skill's rolls. New choices are granted at level 4, 8, 12, 16, and 19.</div>
+      ${c.skills.map(s=>`
+        <div class="ref-card" style="${s.proficient?'border-color:var(--teal);':''}">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+            <div class="rc-name">${escHtml(s.name)} <span style="color:var(--cream-dim); text-transform:none;">— ${STAT_LABELS[s.stat]}</span></div>
+            <div style="font-family:var(--mono); font-size:11px; color:${s.proficient?'var(--teal)':'var(--cream-dim)'}; white-space:nowrap;">${s.proficient?'Proficient':'Untrained'}</div>
+          </div>
+          <div class="rc-meta" style="margin-top:4px;">${escHtml(s.desc)}</div>
+        </div>
+      `).join('')}
     </div>
     <div class="status-field">
       <label>Coins</label>
@@ -1496,11 +2041,22 @@ function buildStaticInstructions(){
 These are the campaign's save files — read them first and treat them as source of truth. Never contradict them. They will be provided after this instructions block, in a separate message section, since they change between turns.
 
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
+requires_roll.stat: for non-magic checks, set this to whichever of the six D&D ability scores (str/dex/con/int/wis/cha) actually fits the action — the app adds that score's real ability modifier plus proficiency bonus to the roll automatically. Str for forcing/breaking/lifting, Dex for precision/stealth/reflexes, Con for enduring/resisting physical strain, Int for reading tech/relics/puzzles, Wis for perception/instinct/staying composed, Cha for social/scheming/presence. Leave it null specifically for magic/grounding-based rolls (the existing water/stone/wet mechanic), which keep working exactly as before.
+Attacks & skills: the character sheet in your context lists named attacks (with type, associated stat, damage die, damage type, and any resource cost) and named skills (proficient or not, D&D-style — proficient adds proficiency bonus, untrained doesn't). When the player uses one — invokes a named attack, or clearly does something a named skill covers — set requires_roll.stat to that attack/skill's stat, and requires_roll.skill to the exact skill name if a skill applies (attacks don't use this field, only skills do). For an attack that costs Magic Reserve, apply that cost via character_status.magic_reserve the same turn it's used, whether the roll hits or not — the cost is for attempting it. On a hit, damage = the attack's damage die + the same ability modifier, applied as a negative character_status.hp_delta to whatever's being hit (the enemy, via combat.enemy_hp — not the player's own HP, unless the player is the one taking damage).
+Saving throws vs. checks: when danger is being resisted rather than actively attempted (dodging a blast, resisting fear, shrugging off poison), set requires_roll.save true instead of requires_roll.skill — the app checks save proficiency, not skill proficiency, for the bonus. A bare ability check (stat set, no skill, no save) gets no proficiency bonus at all, same as real D&D — that's correct, not a bug.
+Advantage/disadvantage: set requires_roll.advantage or requires_roll.disadvantage (never both) when the situation genuinely warrants it — real advantage from a clear edge (attacking a prone or blinded target, a well-set-up action), real disadvantage from a real hindrance (attacking while restrained, an ill-advised action under duress). Don't reach for this often; it should feel earned.
+Armor Class & Passive Perception: the character sheet in context includes both — check AC when narrating whether an incoming attack would hit, and use Passive Perception to decide what the player notices without them needing to roll for it.
+Conditions: apply real D&D conditions via character_status.conditions_add/conditions_remove (Blinded, Charmed, Frightened, Grappled, Paralyzed, Poisoned, Prone, Restrained, Stunned, Unconscious, etc.) when they genuinely apply, and remove them the moment they no longer do — don't leave a stale condition lingering. Exhaustion is separate: use character_status.exhaustion_delta (positive to add levels, negative to remove) rather than the conditions list, since it's a 0-6 severity level, not on/off.
+Death saves: when hpCurrent would hit 0, the app automatically starts real death-save resolution — you don't manage that mechanically, just narrate around whatever the player's death save results turn out to be once they come back to you.
+Resting: when the player takes a genuine short or long rest in the story, set character_status.rest to "short" or "long" — the app handles the actual HP/Magic Reserve/exhaustion recovery. Don't apply hp_delta manually for a rest; the rest field does that correctly on its own.
+Status effects (fire, poison, bleed, etc.): when an attack or hazard would leave a lingering effect on an enemy, add it to combat.status_effects (name, a single emoji icon, turns_left) — this is purely for the player to see it's active, the app doesn't automatically tick damage. You still narrate and apply the ongoing damage yourself each turn it's relevant (via enemy_hp), and update or remove the effect from status_effects as it fades or gets cured. Don't leave a stale effect listed after it's actually over.
+Item effects: when an item does something mechanically relevant (heals HP, boosts a stat/roll temporarily, has a combat use), say so plainly in its desc when added via inventory_updates — the player only sees this in the item's info panel, so it needs to actually state the effect, not just flavor text.
 If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
 If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are and the current quest given in the save files. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
 Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
+Equipping now uses real slots, not an unstructured list — inventory_updates.equip needs {name, slot}, slot being "head", "body", "feet", "accessory", "hand1h" (one-handed), or "hand2h" (two-handed, uses both hand slots at once). Head/Body/Feet/Accessory are single-item slots — equipping something new there automatically swaps the old item back to inventory, it doesn't just add on top or block. Hands have a real 2-slot capacity (unless the character has a special ability granting extraHandCapacity) — a one-handed item costs 1, two-handed costs both, and the app will refuse an equip that doesn't fit (pushing a note explaining why) rather than silently allowing it. Don't narrate an item as successfully equipped without actually setting this field with the correct slot.
 Item condition: if an item's actual state isn't normal/pristine — broken, out of charge, modified, cracked, jury-rigged, drained — say so directly in its name with a short parenthetical (e.g. "Focus-tool (drained)", "Rusted key (bent)"), not just buried in the description, so it's visible at a glance in the inventory list. When an item's condition changes during play (it breaks, runs out of power, gets fixed, gets modified), use inventory_updates.update with the exact old_name so it's renamed in place rather than treated as a new separate item — don't just narrate the change and leave the inventory list stale.
 Stashing vs. dropping: if the player leaves an item somewhere with any intent to come back for it — hides it, stores it, tucks it away for later — use inventory_updates.stash (with a specific location), not drop. Dropped items are gone for good with no record; stashed items are tracked and can be picked back up later via inventory_updates.retrieve, even many turns later, since the stash list is always in your context regardless of how long it's been.
 Important distinction for inventory_updates.add and item_found: merely describing that an item exists in the scene — a vendor has it for sale, it's sitting in a pile, an NPC is holding it — is NOT the same as the player having it. Never call add or item_found in the same turn an item is first introduced, unless the player's action THAT turn is what caused them to actually receive it (they paid, it was handed to them, they already declared they're taking it). If you've just described something as available/present and the player hasn't chosen to acquire it yet, only narrate — leave inventory_updates and item_found untouched, and let the player's next action (buying it, taking it, asking its price) be what actually triggers the change, on a later turn.
@@ -1522,7 +2078,8 @@ Reward rules: never leave reward empty — if you genuinely don't know what it'l
 Main vs. Side: if something is connected to or supports the main story but isn't the singular main throughline itself — a related sub-plot, a task that feeds into it without being it — that's a Side Quest, not an additional Main Quest entry. Keep Main strictly to the 1-2 quests that ARE the throughline.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
-Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Critical: never apply a negative coins_delta (spending) unless the player has explicitly said they're paying/buying/agreeing to the cost — a price being mentioned or a vendor naming a number is not consent, only the player's own action is. If the player hasn't clearly chosen to spend, narrate the offer and wait.
+Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Every negative coins_delta (a spend) is now held by the app for the player's explicit approval before it's ever actually deducted — you don't need to worry about accidentally overcharging, the mechanism itself prevents that. Still narrate purchases naturally when the player has clearly chosen to buy something (don't withhold narration waiting for a separate confirmation step — the app handles the actual approval on its own), and always fill character_status.spend_reason with a short description of what the coins are for (e.g. "food and rope from the market") so the approval prompt is clear about what's being paid for.
+XP (character_status.xp_delta): award for real accomplishments — completing a quest goal, resolving a genuine risk or encounter, a meaningful discovery — not for routine narration or small talk. This uses the real D&D XP scale (300 total XP reaches level 2, 900 reaches level 3, and it climbs fast from there), so awards need to be sized accordingly, not small: a minor beat 25-50 XP, a solid accomplishment 75-150, completing a Side Quest/Small Request 150-300, completing a Main Quest or Unique Event 400-800. The app handles leveling itself (HP growth via hit die + Constitution, ability score improvements at the standard levels, full heal) automatically once enough is earned — you don't need to track levels or thresholds, just award XP when it's actually earned.
 Resource consistency: before stating any price or cost, check the player's current coins in the character sheet — don't quote a number they can't actually afford unless that's a deliberate narrative beat (a vendor is out of their league, a price is meant to be a real obstacle right now). If the story means for them to be able to afford something, the price should fit what they actually have.
 Magic reserve (character_status.magic_reserve): a small spendable pool, separate from the per-roll grounding modifier, representing the character's capacity for real magical effort. Set it to the new absolute value only when it changes — spend 1 or more on genuinely significant spellwork (not routine use of the grounding-based rolls), and it can be recovered through rest or time spent properly grounded. Leave it null on ordinary turns where nothing about it changed.
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. Return fewer (including zero) when you've just asked the player a direct yes/no question. Always return zero when this response sets requires_roll or item_found, or adds a quest/request that might be capacity-deferred — the app hides suggested options in those moments so the player has to actually resolve the roll/claim/quest prompt rather than tapping past it, so there's no point generating them.
@@ -1593,8 +2150,14 @@ const DM_TOOL_SCHEMA = {
       character_status:{ type:"object", properties:{
         hp_delta:{type:["number","null"]},
         coins_delta:{type:["number","null"]},
-        magic_reserve:{type:["number","null"]}
-      }, required:["hp_delta","coins_delta","magic_reserve"] },
+        spend_reason:{type:["string","null"]},
+        magic_reserve:{type:["number","null"]},
+        xp_delta:{type:["number","null"]},
+        conditions_add:{type:"array",items:{type:"string"}},
+        conditions_remove:{type:"array",items:{type:"string"}},
+        exhaustion_delta:{type:["number","null"]},
+        rest:{type:["string","null"],enum:["short","long",null]}
+      }, required:["hp_delta","coins_delta","spend_reason","magic_reserve","xp_delta","conditions_add","conditions_remove","exhaustion_delta","rest"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
         where_we_are:{type:"string"}
@@ -1625,7 +2188,7 @@ const DM_TOOL_SCHEMA = {
         thrum_status:{type:["string","null"]}
       }, required:["bex_note","thrum_note","bex_status","thrum_status"] },
       inventory_updates:{ type:"object", properties:{
-        equip:{type:"array",items:{type:"string"}},
+        equip:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, slot:{type:"string",enum:["head","body","feet","accessory","hand1h","hand2h"]} }, required:["name","slot"] }},
         unequip:{type:"array",items:{type:"string"}},
         drop:{type:"array",items:{type:"string"}},
         add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"} }, required:["name","desc"] }},
@@ -1637,8 +2200,8 @@ const DM_TOOL_SCHEMA = {
         valid:{type:"boolean"},
         reason:{type:["string","null"]}
       }, required:["valid","reason"] },
-      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp"] },
-      requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"} } },
+      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]}, status_effects:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, icon:{type:"string"}, turns_left:{type:"number"} }, required:["name","icon","turns_left"] }} }, required:["active","enemy_name","enemy_hp","enemy_max_hp","status_effects"] },
+      requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"}, stat:{type:["string","null"],enum:["str","dex","con","int","wis","cha",null]}, skill:{type:["string","null"]}, save:{type:"boolean"}, advantage:{type:"boolean"}, disadvantage:{type:"boolean"} } },
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
@@ -1804,6 +2367,7 @@ function handleOOC(){
 
 function toggleOOCMode(){ state.oocMode = !state.oocMode; render(); }
 function submitFreeform(){
+  if(state.booting || state.loading) return; // a request is already in flight — refuse a second one
   const el = document.getElementById('composer-input');
   if(!el || !el.value.trim()) return;
   const text = el.value.trim();
@@ -1986,6 +2550,7 @@ async function callDMApi(body, signal){
   }
 }
 async function sendAction(actionText, meta){
+  if(state.loading) return; // a call is already in flight — refuse to start an overlapping one, from any trigger path
   meta = meta || {};
   if(!meta.skipPlayerBubble){
     // Snapshot everything mutable right before this action, so if the player edits this
@@ -2088,16 +2653,53 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   if(d.character_status && d.character_status.hp_delta) applyHpDelta(d.character_status.hp_delta);
   if(d.character_status && d.character_status.coins_delta){
     const delta = d.character_status.coins_delta;
-    state.character.coins = Math.max(0, state.character.coins + delta);
-    state.chat.push({ type:'note', text:`🪙 ${delta>0?'+':''}${delta} coils (now ${state.character.coins})` });
+    if(delta < 0){
+      // Never deduct automatically — hold it for explicit approval, same pattern as items/rolls/quests.
+      state.pendingPayment = { amount: Math.abs(delta), reason: d.character_status.spend_reason || 'a purchase' };
+    } else {
+      state.character.coins += delta;
+      state.chat.push({ type:'note', text:`🪙 +${delta} coils (now ${state.character.coins})` });
+    }
   }
   if(d.character_status && d.character_status.magic_reserve != null) state.character.magicReserve = Math.max(0, Math.min(state.character.magicReserveMax, d.character_status.magic_reserve));
+  if(d.character_status && d.character_status.xp_delta){
+    const before = state.character.level;
+    const result = applyXpDelta(d.character_status.xp_delta);
+    state.chat.push({ type:'note', text:`✨ +${d.character_status.xp_delta} XP (${state.character.xp}/${xpForLevel(state.character.level+1)})` });
+    if(result.levelUps.length){
+      state.chat.push({ type:'note', text:`🎉 Level up! ${before} → ${state.character.level}. Max HP increased, full heal${state.pendingStatPoint?', stat points to allocate':''}${state.pendingSkillChoice?', new skill proficiency to choose':''}.` });
+      result.featureNotes.forEach(f=>state.chat.push({ type:'note', text:`⭐ ${f}` }));
+    }
+  }
+  if(d.character_status){
+    const c = state.character;
+    (d.character_status.conditions_add||[]).forEach(cond=>{ if(!c.conditions.includes(cond)) c.conditions.push(cond); });
+    (d.character_status.conditions_remove||[]).forEach(cond=>{ const i=c.conditions.indexOf(cond); if(i>=0) c.conditions.splice(i,1); });
+    if(d.character_status.exhaustion_delta){
+      c.exhaustion = Math.max(0, Math.min(6, c.exhaustion + d.character_status.exhaustion_delta));
+      state.chat.push({ type:'note', text:`${d.character_status.exhaustion_delta>0?'😩':'😌'} Exhaustion ${d.character_status.exhaustion_delta>0?'+':''}${d.character_status.exhaustion_delta} (now level ${c.exhaustion})` });
+    }
+    if(d.character_status.rest === 'short'){
+      const heal = Math.max(1, Math.ceil((c.hitDie+1)/2) + abilityMod(c.stats.con));
+      applyHpDelta(heal);
+      const reserveGain = Math.ceil(c.magicReserveMax/2);
+      c.magicReserve = Math.min(c.magicReserveMax, c.magicReserve + reserveGain);
+      state.chat.push({ type:'note', text:`💤 Short rest — +${heal} HP, +${reserveGain} Magic Reserve.` });
+    } else if(d.character_status.rest === 'long'){
+      c.hpCurrent = c.hpMax; c.hp = hpLabel(c.hpCurrent, c.hpMax);
+      c.magicReserve = c.magicReserveMax;
+      c.deathSaves = { successes:0, failures:0 }; c.stable = false; state.pendingDeathSave = false;
+      if(c.exhaustion > 0) c.exhaustion -= 1;
+      state.chat.push({ type:'note', text:`🌙 Long rest — full HP and Magic Reserve restored${c.exhaustion>0?`, exhaustion reduced to level ${c.exhaustion}`:''}.` });
+    }
+  }
   if(d.quest && d.quest.current) state.character.quest = d.quest.current;
   if(d.combat){
     if(d.combat.active){
-      state.combat = { active:true, creatureName:d.combat.enemy_name||'Unknown Foe', creatureHp:d.combat.enemy_hp??10, creatureMaxHp:d.combat.enemy_max_hp??10 };
+      state.combat = { active:true, creatureName:d.combat.enemy_name||'Unknown Foe', creatureHp:d.combat.enemy_hp??10, creatureMaxHp:d.combat.enemy_max_hp??10, statusEffects:d.combat.status_effects||[] };
     } else if(state.combat.active){
       state.combat.active = false;
+      state.combat.statusEffects = [];
     }
   }
   (d.save_worthy||[]).forEach(s=>state.sessionMeta.recentEvents.push(s));
@@ -2185,21 +2787,31 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   if(d.inventory_updates){
     const c = state.character;
     if(!c.itemInfo) c.itemInfo = {};
-    (d.inventory_updates.equip||[]).forEach(name=>{
-      const idx = c.inventory.indexOf(name);
-      if(idx>=0){ c.inventory.splice(idx,1); if(!c.equipped.includes(name)) c.equipped.push(name); inventoryChanged = true; }
+    (d.inventory_updates.equip||[]).forEach(entry=>{
+      const name = entry.name, slot = entry.slot;
+      if(!c.inventory.includes(name)) return; // must actually be carried to equip it
+      const result = equipItemToSlot(name, slot);
+      if(result.ok){
+        const idx = c.inventory.indexOf(name); if(idx>=0) c.inventory.splice(idx,1);
+        inventoryChanged = true;
+        if(result.displaced) state.chat.push({ type:'note', text:`🎒 ${result.displaced} unequipped to make room.` });
+      } else {
+        state.chat.push({ type:'note', text:`⚠️ Couldn't equip ${name} — ${result.reason}.` });
+      }
     });
     (d.inventory_updates.unequip||[]).forEach(name=>{
-      const idx = c.equipped.indexOf(name);
-      if(idx>=0){ c.equipped.splice(idx,1); if(!c.inventory.includes(name)) c.inventory.push(name); inventoryChanged = true; }
+      if(unequipItem(name)){
+        if(!c.inventory.includes(name)) c.inventory.push(name);
+        inventoryChanged = true;
+      }
     });
     (d.inventory_updates.drop||[]).forEach(name=>{
       const ii = c.inventory.indexOf(name); if(ii>=0){ c.inventory.splice(ii,1); inventoryChanged = true; }
-      const ei = c.equipped.indexOf(name); if(ei>=0){ c.equipped.splice(ei,1); inventoryChanged = true; }
+      if(unequipItem(name)) inventoryChanged = true;
     });
     (d.inventory_updates.add||[]).forEach(entry=>{
       const name = entry.name, desc = entry.desc || '';
-      if(!c.inventory.includes(name) && !c.equipped.includes(name)){
+      if(!c.inventory.includes(name) && !isEquipped(name)){
         c.inventory.push(name);
         c.itemInfo[name] = desc;
         newlyGained.push({ name, desc });
@@ -2208,17 +2820,22 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     });
     (d.inventory_updates.update||[]).forEach(u=>{
       const invIdx = c.inventory.indexOf(u.old_name);
-      const eqIdx = c.equipped.indexOf(u.old_name);
+      let renamedEquipped = false;
       if(invIdx>=0){ c.inventory[invIdx] = u.new_name; inventoryChanged = true; }
-      if(eqIdx>=0){ c.equipped[eqIdx] = u.new_name; inventoryChanged = true; }
-      if(invIdx>=0 || eqIdx>=0){
+      ['head','body','feet','accessory1','accessory2'].forEach(slot=>{
+        if(c.equipment[slot]===u.old_name){ c.equipment[slot]=u.new_name; renamedEquipped=true; }
+      });
+      const hand = c.hands.find(h=>h.name===u.old_name);
+      if(hand){ hand.name = u.new_name; renamedEquipped = true; }
+      if(renamedEquipped) inventoryChanged = true;
+      if(invIdx>=0 || renamedEquipped){
         delete c.itemInfo[u.old_name];
         c.itemInfo[u.new_name] = u.new_desc || '';
       }
     });
     (d.inventory_updates.stash||[]).forEach(s=>{
       const ii = c.inventory.indexOf(s.name); if(ii>=0) c.inventory.splice(ii,1);
-      const ei = c.equipped.indexOf(s.name); if(ei>=0) c.equipped.splice(ei,1);
+      unequipItem(s.name);
       if(!state.stashes.some(existing=>existing.name===s.name)){
         state.stashes.push({ name:s.name, desc:s.desc||'', location:s.location||'unspecified location' });
       }
@@ -2228,7 +2845,7 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
       const idx = state.stashes.findIndex(s=>s.name===name);
       if(idx>=0){
         const stashed = state.stashes.splice(idx,1)[0];
-        if(!c.inventory.includes(stashed.name) && !c.equipped.includes(stashed.name)){
+        if(!c.inventory.includes(stashed.name) && !isEquipped(stashed.name)){
           c.inventory.push(stashed.name);
           c.itemInfo[stashed.name] = stashed.desc;
         }
@@ -2288,6 +2905,14 @@ function extractField(text, label){
   const matches = [...text.matchAll(re)];
   return matches.length ? matches[matches.length - 1][1].trim() : null;
 }
+function applyCharacterSheetParse(parsed){
+  const skillProficiencies = parsed.skillProficiencies;
+  delete parsed.skillProficiencies;
+  Object.assign(state.character, parsed);
+  if(skillProficiencies){
+    state.character.skills.forEach(s=>{ if(skillProficiencies[s.name] != null) s.proficient = skillProficiencies[s.name]; });
+  }
+}
 function parseCharacterSheetMd(text){
   const name = extractField(text, 'Name');
   let species = extractField(text, 'Species/type') || extractField(text, 'Species');
@@ -2307,7 +2932,6 @@ function parseCharacterSheetMd(text){
   const coinsLine = extractField(text, 'Coins');
   const reserveLine = extractField(text, 'Magic Reserve');
   const quest = extractField(text, 'Quest');
-  const equippedLine = extractField(text, 'Equipped');
   const invLine = extractField(text, 'Inventory');
   const groundingMap = { 'Near Water':'water', 'On Stone':'stone', 'Wet Earth':'wet', 'Ungrounded':'none' };
   const out = {};
@@ -2329,8 +2953,46 @@ function parseCharacterSheetMd(text){
   if(coinsLine){ const n = parseInt(coinsLine, 10); if(!isNaN(n)) out.coins = n; }
   if(reserveLine){ const m = reserveLine.match(/(\d+)\s*\/\s*(\d+)/); if(m){ out.magicReserve = parseInt(m[1],10); out.magicReserveMax = parseInt(m[2],10); } }
   if(quest) out.quest = quest;
-  if(equippedLine && !/^\(nothing\)$/i.test(equippedLine)) out.equipped = equippedLine.split(',').map(s=>s.trim()).filter(Boolean);
   if(invLine) out.inventory = invLine.split(',').map(s=>s.trim()).filter(Boolean);
+  const headLine = extractField(text, 'Head');
+  const bodyLine = extractField(text, 'Body');
+  const feetLine = extractField(text, 'Feet');
+  const acc1Line = extractField(text, 'Accessory 1');
+  const acc2Line = extractField(text, 'Accessory 2');
+  const handsLine = extractField(text, 'Hands \\(\\d+/\\d+\\)') || extractField(text, 'Hands');
+  const cleanSlot = v => (v && !/^\(empty\)$/i.test(v)) ? v.trim() : null;
+  if(headLine !== null || bodyLine !== null || feetLine !== null || acc1Line !== null || acc2Line !== null){
+    out.equipment = { head:cleanSlot(headLine), body:cleanSlot(bodyLine), feet:cleanSlot(feetLine), accessory1:cleanSlot(acc1Line), accessory2:cleanSlot(acc2Line) };
+  }
+  if(handsLine && !/^\(both free\)$/i.test(handsLine)){
+    out.hands = [...handsLine.matchAll(/([^,(]+)\((\d)h\)/g)].map(m=>({ name:m[1].trim(), handsUsed:parseInt(m[2],10) }));
+  }
+  const levelLine = extractField(text, 'Level');
+  const xpLine = extractField(text, 'XP');
+  if(levelLine){ const n = parseInt(levelLine,10); if(!isNaN(n)) out.level = n; }
+  if(xpLine){ const m = xpLine.match(/^(\d+)/); if(m) out.xp = parseInt(m[1],10); } // cumulative total — only the first number matters now
+  const str = extractField(text, 'STR');
+  const dex = extractField(text, 'DEX');
+  const con = extractField(text, 'CON');
+  const int_ = extractField(text, 'INT');
+  const wis = extractField(text, 'WIS');
+  const cha = extractField(text, 'CHA');
+  if(str || dex || con || int_ || wis || cha){
+    const parseScore = v => v ? parseInt(v,10) : 10; // leading number before the "(+N)" modifier note
+    out.stats = { str:parseScore(str), dex:parseScore(dex), con:parseScore(con), int:parseScore(int_), wis:parseScore(wis), cha:parseScore(cha) };
+  }
+  const hitDieLine = extractField(text, 'Hit Die');
+  if(hitDieLine){ const m = hitDieLine.match(/d(\d+)/i); if(m) out.hitDie = parseInt(m[1],10); }
+  const skillsSection = extractSection(text, 'Skills');
+  if(skillsSection){
+    const profs = {};
+    extractListItems(skillsSection).forEach(line=>{
+      const nameMatch = line.match(/\*\*(.+?)\*\*/);
+      const profMatch = line.match(/\((Proficient|Untrained)\)/);
+      if(nameMatch && profMatch) profs[nameMatch[1].trim()] = profMatch[1]==='Proficient';
+    });
+    if(Object.keys(profs).length) out.skillProficiencies = profs; // merged onto default skills by name via applyCharacterSheetParse
+  }
   return out;
 }
 function parseWorldBibleMd(text){
@@ -2395,7 +3057,7 @@ async function handleImportFiles(event){
     const kind = detectFileKind(file.name);
     if(!kind) continue;
     const text = await file.text();
-    if(kind === 'character_sheet') Object.assign(state.character, parseCharacterSheetMd(text));
+    if(kind === 'character_sheet') applyCharacterSheetParse(parseCharacterSheetMd(text));
     else if(kind === 'world_bible') Object.assign(state.worldBible, parseWorldBibleMd(text));
     else if(kind === 'party') Object.assign(state.party, parsePartyMd(text));
     else if(kind === 'session_log'){
@@ -2443,8 +3105,48 @@ function buildFileContent(kind){
 - **Coins:** ${c.coins} coils *(see world_bible.md → Currency)*
 - **Magic Reserve:** ${c.magicReserve}/${c.magicReserveMax}
 - **Quest:** ${c.quest} *(full detail in session_log.md → Current Quest / Hook)*
-- **Equipped:** ${c.equipped.join(', ') || '(nothing)'}
 - **Inventory:** ${c.inventory.join(', ')}
+
+## Equipment
+- **Head:** ${c.equipment.head || '(empty)'}
+- **Body:** ${c.equipment.body || '(empty)'}
+- **Feet:** ${c.equipment.feet || '(empty)'}
+- **Accessory 1:** ${c.equipment.accessory1 || '(empty)'}
+- **Accessory 2:** ${c.equipment.accessory2 || '(empty)'}
+- **Hands (${handsUsed()}/${handCapacity()}):** ${c.hands.length ? c.hands.map(h=>`${h.name} (${h.handsUsed}h)`).join(', ') : '(both free)'}
+*Head/Body/Feet/Accessory are single-item slots — equipping something new swaps out the old one. Hands are capacity-based: a one-handed item costs 1, two-handed costs both.*
+
+## Level & Experience
+- **Level:** ${c.level}
+- **Proficiency Bonus:** +${proficiencyBonusForLevel(c.level)}
+- **XP:** ${c.xp} / ${xpForLevel(c.level+1)}${c.level>=20?' (max level)':''}
+
+## Ability Scores
+- **STR:** ${c.stats.str} (${abilityMod(c.stats.str)>=0?'+':''}${abilityMod(c.stats.str)})
+- **DEX:** ${c.stats.dex} (${abilityMod(c.stats.dex)>=0?'+':''}${abilityMod(c.stats.dex)})
+- **CON:** ${c.stats.con} (${abilityMod(c.stats.con)>=0?'+':''}${abilityMod(c.stats.con)})
+- **INT:** ${c.stats.int} (${abilityMod(c.stats.int)>=0?'+':''}${abilityMod(c.stats.int)})
+- **WIS:** ${c.stats.wis} (${abilityMod(c.stats.wis)>=0?'+':''}${abilityMod(c.stats.wis)})
+- **CHA:** ${c.stats.cha} (${abilityMod(c.stats.cha)>=0?'+':''}${abilityMod(c.stats.cha)})
+- **Hit Die:** d${c.hitDie}
+*Real D&D 5e math — modifier = floor((score-10)/2). See world_bible.md → Rules of This World → How Stats Work.*
+
+## Defenses
+- **Armor Class:** ${armorClass()} *(10 + Dex modifier${c.armorBonus?` + ${c.armorBonus} armor`:''})*
+- **Passive Perception:** ${passivePerception()} *(10 + Wis modifier)*
+- **Saving Throw Proficiencies:** ${Object.keys(STAT_LABELS).filter(k=>c.saveProficiencies[k]).map(k=>k.toUpperCase()).join(', ') || '(none)'}
+- **Death Saves:** ${c.deathSaves.successes} successes / ${c.deathSaves.failures} failures${c.stable?' — currently stable':''}
+
+## Conditions
+${c.conditions.length ? c.conditions.map(cond=>'- '+cond).join('\n') : '- (none active)'}
+- **Exhaustion:** Level ${c.exhaustion}/6
+
+## Attacks
+${c.attacks.map(a=>`- **${a.name}** (${a.type}, ${a.stat.toUpperCase()}) — ${a.damageDie} + mod, ${a.damageType} damage${a.resourceCost?`, costs ${a.resourceCost.magicReserve} Magic Reserve`:''}. ${a.desc}`).join('\n')}
+
+## Skills
+${c.skills.map(s=>`- **${s.name}** (${s.stat.toUpperCase()}) — ${s.desc} *(${s.proficient?'Proficient':'Untrained'})*`).join('\n')}
+*Proficiency is binary, same as real D&D — being proficient adds the current proficiency bonus to that skill's rolls. New proficiency choices are granted at levels 4, 8, 12, 16, and 19.*
 
 *Combat mechanics live in world_bible.md → Rules of This World, since they apply to the world/system, not just this character.*
 `;
@@ -2489,6 +3191,51 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
 - Hit damage = roll a d6.
 - Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
+
+### How Stats Work
+- Six ability scores, real D&D 5e math: **Strength** (force/toughness), **Dexterity** (precision/reflexes), **Constitution** (endurance, and determines HP gained per level), **Intelligence** (tech/relics/puzzles), **Wisdom** (perception/instinct/composure), **Charisma** (social/presence/scheming).
+- Modifier = floor((score-10)/2) — a score of 10-11 is +0, every 2 points above/below shifts the modifier by 1. Scores cap at 20.
+- A non-magic roll can specify which ability applies; the app adds that ability's modifier *plus* the character's current proficiency bonus automatically. Magic/grounding rolls are unaffected and keep using the existing water/stone/wet mechanic.
+- Raken's starting array (15/14/13/12/10/8 assigned by concept): INT 15, WIS 14, DEX 13, CHA 12, CON 10, STR 8 — a careful tinkerer who isn't built for a fight.
+
+### How Leveling Works
+- Real D&D 5e XP thresholds — cumulative total, never resets: 300 XP reaches level 2, 900 reaches level 3, 2700 for level 4, climbing steeply from there up to level 20.
+- Proficiency bonus scales with level: +2 at levels 1-4, +3 at 5-8, +4 at 9-12, +5 at 13-16, +6 at 17-20.
+- Each level grants max HP equal to the average roll of the character's hit die (rounded up) plus their Constitution modifier — Raken's hit die is d8, so roughly +5 HP per level before the Constitution adjustment — plus a full heal and a banked skill point. Every even level also grants +1 max Magic Reserve.
+- Ability Score Improvements happen only at levels 4, 8, 12, 16, and 19 (the standard progression), granting 2 points total to freely allocate — both into one score, or split across two, same as the real rule's "+2 one score or +1/+1 two scores" choice.
+
+### How Attacks & Skills Work
+- **Attacks** are fixed reference moves — each has a type (melee/ranged/magic), an associated ability score, a damage die, a damage type, and sometimes a Magic Reserve cost. Damage on a hit = the die roll + that ability's modifier. A resource-costing attack spends its cost whether the attack hits or not.
+- **Skills** are named capabilities (Relic Read, Scheme, Ground & Channel, Jury-Rig for Raken) that are binary — proficient or not, same as real D&D, no ranks or point-buy. Being proficient adds the character's current proficiency bonus to a roll using that skill; untrained adds nothing beyond the raw ability modifier.
+- New skill proficiency choices are granted at levels 4, 8, 12, 16, and 19, alongside the Ability Score Improvement at those same levels — a homebrew adaptation, since there's no class/background here to hand out fixed proficiencies the normal way.
+- **Status effects** (fire, poison, bleed, etc.) on an enemy are tracked for display only — the DM still narrates and applies the ongoing damage each turn manually, the tracker just keeps it visible so it isn't forgotten.
+
+### How Equipment Slots Work
+- Real slots, not an unlimited list: Head, Body, Feet, and two Accessory slots each hold exactly one item — equipping something new to an occupied slot swaps the old item back to inventory automatically.
+- Hands have a real 2-slot capacity: a one-handed item (most weapons, tools) costs 1, a two-handed item costs both. Can't equip beyond capacity — the app refuses it and explains why, rather than silently allowing it.
+- Extra hand capacity beyond the normal 2 only comes from a specific in-story ability (an extra limb, a summoned appendage, etc) — never assumed by default.
+
+### How Getting Stronger Actually Works
+- Ability Score Improvements and rising Hit Points are real, but they're a slow trickle — most of a D&D character's power growth actually comes from unlocking new things to do, not bigger numbers on old things (a Fighter's Extra Attack, a Wizard's new spell levels, etc). There's no class system here, so Raken has a small hand-built table of level-gated unlocks instead: a new attack at level 3, an upgraded Improvised Strike at 5, a new skill at 7, an upgraded Focus Pulse at 10.
+- Proficiency bonus climbing with level (+2 up to +6) is also a major, often-underrated source of growing power — it applies to every proficient skill, save, and attack at once.
+
+### How Defenses Work
+- **Armor Class (AC)** = 10 + Dexterity modifier (plus any armor bonus). This is the number an attacker's d20 roll needs to meet or beat to land a hit.
+- **Passive Perception** = 10 + Wisdom modifier. The DM uses this to decide what the character notices without calling for an active roll.
+- **Saving throws** are their own category, separate from skill checks — each of the 6 abilities has its own save, and the character can be proficient in specific ones (Raken: Intelligence and Wisdom, matching a real Wizard's save proficiencies). Proficiency bonus applies only if proficient in that specific save.
+- **Advantage/Disadvantage**: certain rolls are made with advantage (roll 2d20, take the higher) or disadvantage (take the lower) instead of a flat single roll — reflects real situational edges or hindrances, not a permanent bonus.
+
+### How Death Saves Work
+- At 0 HP, the character isn't just "unconscious" — real death saves apply. Roll a d20: 10 or higher is a success, under 10 is a failure. A natural 20 revives outright at 1 HP. A natural 1 counts as two failures. Three successes stabilizes (still at 0 HP, no longer actively dying); three failures ends it — respecting the Hardcore Mode setting either way.
+- Any real healing above 0 HP clears an ongoing death save count entirely.
+
+### How Conditions Work
+- Standard D&D conditions (Blinded, Charmed, Frightened, Grappled, Paralyzed, Poisoned, Prone, Restrained, Stunned, Unconscious, etc.) can be applied and removed by the DM as the story calls for them — see the Library tab's Conditions reference for what each one actually does mechanically.
+- **Exhaustion** is tracked separately as a 0-6 level rather than a simple on/off condition, since its severity escalates (disadvantage on checks, halved speed, disadvantage on attacks/saves, halved max HP, and so on up to level 6, which is fatal).
+
+### How Resting Works
+- **Short Rest** recovers some HP (average hit-die roll + Constitution modifier) and about half of max Magic Reserve.
+- **Long Rest** fully restores HP and Magic Reserve, clears any death save progress, and reduces Exhaustion by 1 level.
 
 ### How Quests Work
 - **Main Quest** — the throughline; 1-2 active at a time, never more. Drives earning coin, story loot, encounters, NPCs, and exploring/traveling the map. Never capacity-limited, never evicted.
