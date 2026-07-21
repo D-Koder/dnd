@@ -134,7 +134,7 @@
     background:rgba(19,42,39,0.9); backdrop-filter:blur(10px) saturate(130%); border-top:1px solid var(--line); }
   .composer input[type=text]{
     flex:1; background:none; border:none; border-bottom:1px solid var(--line); color:var(--cream);
-    padding:8px 2px; font-family:var(--mono); font-size:13px; border-radius:0;
+    padding:8px 2px; font-family:var(--mono); font-size:16px; border-radius:0;
   }
   .composer input[type=text]:focus{ outline:none; border-bottom-color:var(--teal); }
   .composer input[type=text]::placeholder{ color:var(--cream-dim); opacity:0.5; }
@@ -181,8 +181,8 @@
   .roll-detail{ text-align:center; font-family:var(--mono); font-size:12px; color:var(--cream-dim); }
   label{ font-family:var(--mono); font-size:11px; color:var(--cream-dim); text-transform:uppercase; letter-spacing:1px; display:block; margin-bottom:6px; }
   select, textarea{ background:var(--bg); border:1px solid var(--line); color:var(--cream); padding:8px 10px;
-    font-family:var(--mono); font-size:13px; border-radius:2px; width:100%; }
-  textarea{ font-family:var(--serif); font-size:13px; resize:vertical; }
+    font-family:var(--mono); font-size:16px; border-radius:2px; width:100%; }
+  textarea{ font-family:var(--serif); font-size:16px; resize:vertical; }
   .field{ margin-bottom:14px; }
   .charge-btns{ display:flex; gap:6px; flex-wrap:wrap; }
   .charge-btns button{ font-family:var(--mono); font-size:11px; padding:7px 11px; background:var(--bg);
@@ -944,8 +944,8 @@ function questCap(category){ return category==='side' ? 5 : category==='small' ?
 function makeQuestEntry(qs, entry){
   return {
     title: entry.title, desc: entry.desc,
-    goals: (entry.goals||[]).map(g=>({ text:g, done:false })),
-    reward: entry.reward || '',
+    goals: (entry.goals||[]).map(g=>({ text:g, done:false })).slice(0,3),
+    reward: (entry.reward && entry.reward.trim()) ? entry.reward.trim() : '??',
     status:'active', pinned:false, order: qs.nextOrder++
   };
 }
@@ -1128,6 +1128,17 @@ function renderLibraryTab(){
   `;
 }
 function setLibrarySection(s){ state.library.section = s; render(); }
+function renderQuestReward(reward){
+  const trimmed = reward.trim();
+  if(trimmed === '??' || trimmed.startsWith('??')){
+    return `<div class="rc-meta" style="margin-top:8px; opacity:0.6; font-style:italic;">❓ Reward not yet known${trimmed.length>2 ? ' — '+escHtml(trimmed.slice(2).trim()) : ''}</div>`;
+  }
+  if(trimmed.startsWith('!!')){
+    const text = trimmed.slice(2).trim();
+    return `<div class="rc-meta" style="margin-top:8px; color:var(--violet); font-weight:bold;">⚡ ${escHtml(text)}</div>`;
+  }
+  return `<div class="rc-meta" style="margin-top:8px; color:var(--brass);">🎁 ${escHtml(trimmed)}</div>`;
+}
 function renderQuestTab(){
   const q = state.quests;
   const caps = { side:5, small:10 };
@@ -1146,7 +1157,7 @@ function renderQuestTab(){
           </div>
           <div class="rc-meta" style="margin-top:4px;">${escHtml(x.desc)}</div>
           ${(x.goals && x.goals.length) ? `<div style="margin-top:8px;">${x.goals.map(g=>`<div class="rc-meta" style="margin-top:2px;">${g.done?'✅':'⬜'} ${escHtml(g.text)}</div>`).join('')}</div>` : ''}
-          ${x.reward ? `<div class="rc-meta" style="margin-top:8px; color:var(--brass);">🎁 ${escHtml(x.reward)}</div>` : ''}
+          ${x.reward ? renderQuestReward(x.reward) : ''}
         </div>
       `).join('') : `<div class="flavor">None active.</div>`}
       ${done.length ? `<div class="flavor" style="margin-top:8px; font-size:11px;">✅ Completed: ${done.map(x=>escHtml(x.title)).join(', ')}</div>` : ''}
@@ -1506,7 +1517,9 @@ Quests (quest_updates) — four distinct categories, each with a different job. 
 - Small requests (new_small): the lightest tier — a single discrete, checkable fact or task, not a story arc. Examples: a favor asked in passing ("check on my sister when you're near the market"), a lead not yet investigated (a rumor, a tip), a code or mechanism worth remembering ("the loose floorboard in the warehouse"), a time-sensitive fact ("the shipment arrives in three days"), an identifying detail that might matter later (a scar, a tattoo). These exist so small but real details survive even many turns later instead of just vanishing from context — log one whenever the player is given or notices something like this that isn't important enough to be a full side quest.
 - Unique events (new_unique): rare and special. Mechanically simpler in scope than a main quest, but should be harder to actually pull off — a real challenge, not busywork. On completion these pay off big: epic loot, a meaningful coin reward, and something that unlocks new story or genuinely makes the main quest easier or more interesting going forward. These shouldn't appear often — when they do, they should feel like a real occasion.
 Mark a quest complete via quest_updates.complete (list its exact title) the turn it's actually finished — don't leave it lingering as active once its resolution has clearly happened in the story.
-Every quest at every tier (new_main/new_side/new_small/new_unique) needs real "goals" (2-4 short, concrete, checkable steps — not vague vibes, things you can tell whether the player has actually done) and a real "reward" describing what completing it grants. As individual goals get accomplished in play, mark them via quest_updates.goal_done (exact quest title + exact goal text) — don't wait until the very end to update anything, tick them off as they genuinely happen. The reward's size and nature should scale to the quest's actual complexity/tier (small requests get small rewards, unique events get real payoffs) and should fit the personality and means of whoever's offering it — a wealthy patron offers differently than a struggling fisherman, a generous NPC differently than a stingy one; don't default to a generic reward disconnected from who's actually giving it.
+Every quest at every tier (new_main/new_side/new_small/new_unique) needs real "goals" (2-3 short, concrete, checkable steps, max 3 — not vague vibes, things you can tell whether the player has actually done) and a real "reward". As individual goals get accomplished in play, mark them via quest_updates.goal_done (exact quest title + exact goal text) — don't wait until the very end to update anything, tick them off as they genuinely happen. For Main Quest specifically: once all 3 goals are done, that quest should complete and be replaced by the next one in the throughline — don't let it linger fully-checked without concluding.
+Reward rules: never leave reward empty — if you genuinely don't know what it'll be yet, use exactly "??" (optionally with a short note after, e.g. "?? — Corr hasn't said what he'll offer"). If the reward is notably advantageous — something that gives a real edge outside or inside combat, not just a generic prize (a rare tool, a useful weapon, information that unlocks something, anything tied to a Unique Event's big payoff) — prefix it with "!!" (e.g. "!! An old-tech multitool that reveals hidden mechanisms"). Otherwise just describe it plainly. Common rewards are simple items or coin; a quest can list multiple rewards together in one string when that's warranted by its difficulty (e.g. "40 coils and a masterwork dagger"). Reward size/nature should scale to the quest's actual complexity/tier and fit the personality and means of whoever's offering it — a wealthy patron offers differently than a struggling fisherman, a generous NPC differently than a stingy one.
+Main vs. Side: if something is connected to or supports the main story but isn't the singular main throughline itself — a related sub-plot, a task that feeds into it without being it — that's a Side Quest, not an additional Main Quest entry. Keep Main strictly to the 1-2 quests that ARE the throughline.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
 Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Critical: never apply a negative coins_delta (spending) unless the player has explicitly said they're paying/buying/agreeing to the cost — a price being mentioned or a vendor naming a number is not consent, only the player's own action is. If the player hasn't clearly chosen to spend, narrate the offer and wait.
@@ -1517,6 +1530,10 @@ Voice consistency (important): this exact instruction set may be run by differen
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
 }
 // Dynamic per-turn state — small, changes often, sent uncached every call.
+function questContextLine(q){
+  const goalsStr = (q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ');
+  return `${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''} (${goalsStr}) reward:${q.reward||'??'}`;
+}
 function buildDynamicContext(){
   const wb = state.worldBible;
   return `CHARACTER SHEET:
@@ -1546,10 +1563,10 @@ Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none 
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
 QUESTS (do not exceed 1-2 active Main Quests — check the count below before adding another; capacity for Side/Small is app-managed, don't worry about their limits). Goal checkboxes shown as [x]/[ ]:
-Main (${state.quests.main.filter(q=>q.status!=='complete').length} active): ${state.quests.main.map(q=>`${q.title}${q.status==='complete'?' [complete]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
-Side: ${state.quests.side.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
-Small Requests: ${state.quests.small.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
-Unique Events: ${state.quests.unique.map(q=>`${q.title}${q.status==='complete'?' [complete]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
+Main (${state.quests.main.filter(q=>q.status!=='complete').length} active): ${state.quests.main.map(q=>questContextLine(q)).join(' | ') || '(none yet)'}
+Side: ${state.quests.side.map(q=>questContextLine(q)).join(' | ') || '(none yet)'}
+Small Requests: ${state.quests.small.map(q=>questContextLine(q)).join(' | ') || '(none yet)'}
+Unique Events: ${state.quests.unique.map(q=>questContextLine(q)).join(' | ') || '(none yet)'}
 
 STASHED ITEMS (left behind somewhere specific, not currently carried — use inventory_updates.retrieve if the player goes back for one):
 ${state.stashes.map(s=>`${s.name} — left at: ${s.location}`).join(' | ') || '(none)'}
@@ -1594,10 +1611,10 @@ const DM_TOOL_SCHEMA = {
         currency:{type:["string","null"]}
       }, required:["new_locations","new_settlements","new_factions","new_npcs","new_map_notes","new_artifacts","currency"] },
       quest_updates:{ type:"object", properties:{
-        new_main:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
-        new_side:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
-        new_small:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
-        new_unique:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_main:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"},maxItems:3}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_side:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"},maxItems:3}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_small:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"},maxItems:3}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_unique:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"},maxItems:3}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
         goal_done:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, goal:{type:"string"} }, required:["title","goal"] }},
         complete:{type:"array",items:{type:"string"}}
       }, required:["new_main","new_side","new_small","new_unique","goal_done","complete"] },
@@ -2401,7 +2418,13 @@ async function handleImportFiles(event){
 function formatQuestLine(q){
   const pin = q.pinned ? ' 📌' : '';
   const goalsBlock = (q.goals && q.goals.length) ? q.goals.map(g=>`  - [${g.done?'x':' '}] ${g.text}`).join('\n') : '';
-  const rewardLine = q.reward ? `\n  - **Reward:** ${q.reward}` : '';
+  let rewardLine = '';
+  if(q.reward){
+    const r = q.reward.trim();
+    if(r === '??' || r.startsWith('??')) rewardLine = `\n  - **Reward:** ❓ not yet known${r.length>2 ? ' — '+r.slice(2).trim() : ''}`;
+    else if(r.startsWith('!!')) rewardLine = `\n  - **Reward:** ⚡ NOTABLE — ${r.slice(2).trim()}`;
+    else rewardLine = `\n  - **Reward:** ${r}`;
+  }
   return `- **${q.title}**${pin} — ${q.desc}${goalsBlock ? '\n'+goalsBlock : ''}${rewardLine}`;
 }
 function buildFileContent(kind){
@@ -2472,7 +2495,8 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - **Side Quests** — max 5 active. Quick-to-medium arcs giving real backstory/texture (an NPC's life, a local trouble). Rewards: simple items, reasonable coin, occasionally something rare.
 - **Small Requests** — max 10 active. Lightweight discrete facts/favors/leads (a favor asked in passing, a rumor, a code, a deadline) — exist so small details survive many turns without being forgotten.
 - **Unique Events** — no cap, but rare by design. Simpler in scope than a Main Quest but genuinely harder to pull off. Big payoff: epic loot, meaningful coin, and something that eases the main story.
-- **Every quest has real structure**: 2-4 concrete goals (checkable steps, ticked off as they're actually accomplished, not vague vibes) and a stated reward. Reward size scales to the quest's tier *and* to the personality/means of whoever's offering it — a wealthy patron and a struggling fisherman don't give the same thing for similar effort.
+- **Every quest has real structure**: up to 3 concrete goals (checkable steps, ticked off as they're actually accomplished, not vague vibes) and a reward that's never left blank. Reward conventions: "??" means not yet decided/revealed; a "!!" prefix flags something notably advantageous (a rare tool, useful info, a real edge — not just a generic prize); otherwise it's a plain description, and can list multiple things at once (coin + an item) when warranted. Reward size/nature scales to the quest's tier *and* the personality/means of whoever's offering it. Once a Main Quest's 3 goals are all done, it completes and the next one in the throughline takes over.
+- **Story-connected but not the throughline itself** — something that supports or ties into the main plot without being the singular ongoing quest — is a Side Quest, not an extra Main Quest slot.
 - **Pinning** — up to 2 Side Quests and 2 Small Requests can be pinned to exempt them from eviction (Main/Unique never need pinning, they're never evicted).
 - **When Side/Small hits its cap**, a new one doesn't silently bump an old one — you get an Accept/Reject prompt showing exactly which (oldest, unpinned) quest would be dropped. Accepting evicts it with a "you've forgotten about..." note; rejecting just declines the new one.
 - Actual current quests (with their goals/reward) live in session_log.md → Active Quests, not here — this section is just the rules of how the system works.
