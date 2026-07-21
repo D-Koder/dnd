@@ -146,7 +146,7 @@
 
   /* ---- composer: terminal prompt, not a messenger pill ---- */
   .composer{ display:flex; align-items:center; gap:10px; padding:12px 16px; flex-shrink:0;
-    background:rgba(19,42,39,0.9); backdrop-filter:blur(10px) saturate(130%); border-top:1px solid var(--line); }
+    background:rgba(19,42,39,0.95); backdrop-filter:blur(10px) saturate(130%); border-top:1px solid var(--line); }
   .composer input[type=text]{
     flex:1; background:none; border:none; border-bottom:1px solid var(--line); color:var(--cream);
     padding:8px 2px; font-family:var(--mono); font-size:16px; border-radius:0;
@@ -175,7 +175,7 @@
   .icon-btn.send:hover{ background:var(--brass); }
 
   /* ---- modal overlay ---- */
-  .overlay{ position:fixed; inset:0; background:rgba(6,14,13,0.72); backdrop-filter:blur(3px);
+  .overlay{ position:fixed; inset:0; background:rgba(6,14,13,0.88); backdrop-filter:blur(4px);
     display:flex; align-items:flex-end; justify-content:center; z-index:60; }
   @media (min-width:640px){ .overlay{ align-items:center; } }
   .sheet{
@@ -286,6 +286,7 @@ function createDefaultState(){
       hands: [{ name:'Modified focus-tool', handsUsed:1 }],
       extraHandCapacity: 0, // only raised by a specific in-story ability (an extra limb, etc) — never assumed
       itemInfo: {}, // itemName -> description, populated as items are found/added
+      itemQty: {}, // itemName -> stack count. Absent/1 means a single item, not a stack.
       coins: 15, // in coils, the world's base currency unit — see world bible
       magicReserve: 3,
       magicReserveMax: 3, // spendable pool for significant spellwork, separate from the per-roll grounding modifier
@@ -319,7 +320,10 @@ function createDefaultState(){
     },
     pendingSkillChoice: 0, // count of skill proficiency choices pending — granted at ASI levels
     pendingDeathSave: false,
-    combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0, statusEffects:[] }, // statusEffects: [{name, icon, turnsLeft}] — lingering ailments like fire/poison, DM-narrated damage, app just displays them
+    pendingSpellCast: null, // { cost, reason } — Magic Reserve spend held for approval, same principle as coin payments
+    lastDeathSaveRoll: null, // most recent death save d20 result, shown in the modal so the player can see it
+    combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0, statusEffects:[], enemyAC:10, enemyAttackBonus:0, enemyDamageDie:'d6', enemyDamageType:'physical' }, // statusEffects: [{name, icon, turnsLeft}] — lingering ailments like fire/poison, DM-narrated damage, app just displays them. enemy* fields set once when combat starts, persist turn to turn — hit/miss/damage from here on is real code, not AI judgment.
+    creatureLog: [], // [{name, location, tier, hp, ac, attackBonus, damageDie, damageType, description, lootNotes, firstEncountered}] — reused for consistency when a creature type reappears
     chat: [],
     booting: true,
     lastOptions: [],
@@ -461,8 +465,10 @@ function applyHpDelta(delta){
     c.deathSaves = { successes:0, failures:0 };
     c.stable = false;
     state.pendingDeathSave = false;
+    state.lastDeathSaveRoll = null;
   } else if(c.hpCurrent <= 0 && wasAbove0 && !c.stable){
     state.pendingDeathSave = true;
+    state.lastDeathSaveRoll = null; // fresh sequence, don't show a leftover number from last time
   }
 }
 // A small hand-defined table of level-gated unlocks for Raken specifically — there's no class
@@ -559,6 +565,7 @@ const SAVE_FILE_PATHS = {
   world_bible: ['saves/world_bible.md', 'saves/world bible.md'],
   party: ['saves/party.md'],
   session_log: ['saves/session_log.md', 'saves/session log.md'],
+  creatures: ['saves/creatures.md'],
 };
 async function tryFetchText(paths){
   for(const p of paths){
@@ -574,16 +581,18 @@ async function tryFetchText(paths){
 // alongside index.html (e.g. on Vercel). Inside Claude.ai's artifact preview there's
 // no such folder, so this quietly finds nothing and falls through.
 async function loadSaveFilesFromDisk(){
-  const [char, wb, party, log] = await Promise.all([
+  const [char, wb, party, log, creatures] = await Promise.all([
     tryFetchText(SAVE_FILE_PATHS.character_sheet),
     tryFetchText(SAVE_FILE_PATHS.world_bible),
     tryFetchText(SAVE_FILE_PATHS.party),
     tryFetchText(SAVE_FILE_PATHS.session_log),
+    tryFetchText(SAVE_FILE_PATHS.creatures),
   ]);
   let found = false;
   if(char){ applyCharacterSheetParse(parseCharacterSheetMd(char)); found = true; }
   if(wb){ Object.assign(state.worldBible, parseWorldBibleMd(wb)); found = true; }
   if(party){ Object.assign(state.party, parsePartyMd(party)); found = true; }
+  if(creatures){ const parsedCreatures = parseCreaturesMd(creatures); if(parsedCreatures.length){ state.creatureLog = parsedCreatures; found = true; } }
   if(log){
     const parsed = parseSessionLogMd(log);
     if(parsed.partyBexStatus) state.party.bexStatus = parsed.partyBexStatus;
@@ -610,13 +619,14 @@ function applyParsedQuests(parsedQuests){
 }
 // Fallback: this device/browser's own storage from a previous session here.
 async function loadSaveFilesFromStorage(){
-  const [char, wb, party, meta, quests, stashes] = await Promise.all([
+  const [char, wb, party, meta, quests, stashes, creatures] = await Promise.all([
     storageGet('veyrune:character_sheet'),
     storageGet('veyrune:world_bible'),
     storageGet('veyrune:party'),
     storageGet('veyrune:session_log'),
     storageGet('veyrune:quests'),
     storageGet('veyrune:stashes'),
+    storageGet('veyrune:creatures'),
   ]);
   let found = false;
   if(char){ Object.assign(state.character, JSON.parse(char)); found = true; }
@@ -625,6 +635,7 @@ async function loadSaveFilesFromStorage(){
   if(meta){ Object.assign(state.sessionMeta, JSON.parse(meta)); found = true; }
   if(quests){ Object.assign(state.quests, JSON.parse(quests)); found = true; }
   if(stashes){ state.stashes = JSON.parse(stashes); found = true; }
+  if(creatures){ state.creatureLog = JSON.parse(creatures); found = true; }
   return found;
 }
 async function loadSettingsOnly(){
@@ -648,6 +659,7 @@ async function bootSaveFiles(){
   let restoredQuestOverflow = null;
   let restoredPayment = null;
   let restoredStatPoint = 0;
+  let restoredSpellCast = null;
   try{
     const savedChat = await storageGet('veyrune:chat_transcript');
     if(savedChat){
@@ -664,6 +676,7 @@ async function bootSaveFiles(){
         restoredQuestOverflow = parsed.pendingQuestOverflow || null;
         restoredPayment = parsed.pendingPayment || null;
         restoredStatPoint = parsed.pendingStatPoint || 0;
+        restoredSpellCast = parsed.pendingSpellCast || null;
       }
     }
   }catch(e){ /* fine, fall through to normal boot */ }
@@ -701,6 +714,7 @@ async function bootSaveFiles(){
     if(restoredQuestOverflow) state.pendingQuestOverflow = restoredQuestOverflow;
     if(restoredPayment) state.pendingPayment = restoredPayment;
     if(restoredStatPoint) state.pendingStatPoint = restoredStatPoint;
+    if(restoredSpellCast) state.pendingSpellCast = restoredSpellCast;
 
     // If the very last thing in the transcript is the player's own message with nothing
     // after it, the DM never actually answered — most likely a refresh happened mid-call.
@@ -745,6 +759,7 @@ async function persistSaveFiles(){
     storageSet('veyrune:session_log', JSON.stringify(state.sessionMeta)),
     storageSet('veyrune:quests', JSON.stringify(state.quests)),
     storageSet('veyrune:stashes', JSON.stringify(state.stashes)),
+    storageSet('veyrune:creatures', JSON.stringify(state.creatureLog)),
   ]);
 }
 async function persistSettings(){
@@ -769,7 +784,8 @@ function scheduleChatPersist(){
       pendingRoll: state.pendingRoll,
       pendingQuestOverflow: state.pendingQuestOverflow,
       pendingPayment: state.pendingPayment,
-      pendingStatPoint: state.pendingStatPoint
+      pendingStatPoint: state.pendingStatPoint,
+      pendingSpellCast: state.pendingSpellCast
     }));
   }, 600);
 }
@@ -813,7 +829,7 @@ function render(){
         : state.chat.map(renderChatItem).join('') + (state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : '')
       }</div>
       ${state.combat.active ? renderEnemyStrip() : ''}
-      ${state.lastOptions.length && !state.loading && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow && !state.pendingPayment && !state.pendingStatPoint && !state.pendingDeathSave && !state.pendingSkillChoice ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
+      ${state.lastOptions.length && !state.loading && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow && !state.pendingPayment && !state.pendingSpellCast && !state.pendingStatPoint && !state.pendingDeathSave && !state.pendingSkillChoice ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
       <div class="composer ${state.oocMode ? 'ooc-active' : ''}">
         ${state.pendingDeathSave ? `
           <button class="claim-item-btn" style="background:var(--danger); border-color:var(--danger); animation:none;" onclick="openDeathSaveModal()">
@@ -827,13 +843,17 @@ function render(){
           <button class="claim-item-btn" onclick="openStatPointModal()">
             🎉 Allocate Stat Point${state.pendingStatPoint>1?'s':''} (${state.pendingStatPoint})
           </button>
+        ` : state.pendingSpellCast ? `
+          <button class="claim-item-btn" onclick="openSpellCastModal()">
+            ✨ Cast ${escHtml(state.pendingSpellCast.reason)}? (${state.pendingSpellCast.cost} Magic Reserve)
+          </button>
         ` : state.pendingPayment ? `
           <button class="claim-item-btn" onclick="openPaymentModal()">
             💰 Pay ${state.pendingPayment.amount} coils? — ${escHtml(state.pendingPayment.reason)}
           </button>
         ` : state.pendingItemClaim ? `
           <button class="claim-item-btn" onclick="openPendingItemClaim()">
-            ${state.pendingItemClaim.kind==='item' ? '🎁 Claim Item: '+escHtml(state.pendingItemClaim.item.name) : '🎒 Claim '+state.pendingItemClaim.items.length+' Item'+(state.pendingItemClaim.items.length>1?'s':'')}
+            ${state.pendingItemClaim.kind==='item' ? '🎁 Claim Item: '+escHtml(state.pendingItemClaim.item.name) : state.pendingItemClaim.kind==='retrieve' ? '📦 Take Back: '+escHtml(state.pendingItemClaim.item.name) : '🎒 Claim '+state.pendingItemClaim.items.length+' Item'+(state.pendingItemClaim.items.length>1?'s':'')}
           </button>
         ` : state.pendingRoll ? `
           <button class="claim-item-btn" onclick="openDiceModal(state.pendingRoll)">
@@ -844,6 +864,7 @@ function render(){
             ❓ ${state.pendingQuestOverflow.category==='side'?'Side Quest':'Request'} Offered: ${escHtml(state.pendingQuestOverflow.newQuest.title)}
           </button>
         ` : `
+          ${state.combat.active ? `<button class="icon-btn" title="Attack" onclick="openAttackModal()" ${state.booting||state.loading?'disabled':''} style="color:var(--danger);">⚔️</button>` : ''}
           <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting||state.loading?'disabled':''}>⚄</button>
           <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting||state.loading?'disabled':''}>OOC</button>
           <input type="text" id="composer-input" placeholder="${state.booting?'Loading…':state.loading?'Waiting for the DM…':(state.oocMode?'Ask the DM (OOC)…':'What do you do?')}" onkeydown="if(event.key==='Enter') submitFreeform()" ${state.booting||state.loading?'disabled':''}>
@@ -1112,6 +1133,7 @@ function renderModal(){
   const m = state.modal;
   if(m.kind==='dice') return renderDiceModal(m);
   if(m.kind==='item') return renderItemModal(m);
+  if(m.kind==='retrieve') return renderRetrieveModal(m);
   if(m.kind==='edit') return renderEditModal();
   if(m.kind==='preview') return renderPreviewModal(m);
   if(m.kind==='reset-confirm') return renderResetConfirmModal();
@@ -1122,6 +1144,8 @@ function renderModal(){
   if(m.kind==='item-info') return renderItemInfoModal(m);
   if(m.kind==='quest-overflow') return renderQuestOverflowModal();
   if(m.kind==='payment') return renderPaymentModal();
+  if(m.kind==='spell-cast') return renderSpellCastModal();
+  if(m.kind==='attack-picker') return renderAttackModal();
   if(m.kind==='stat-point') return renderStatPointModal();
   if(m.kind==='death-save') return renderDeathSaveModal();
   if(m.kind==='skill-choice') return renderSkillChoiceModal();
@@ -1189,6 +1213,28 @@ function rollModifierFor(requirement){
   return { mod: magicMod(), label: 'grounding' };
 }
 function armorClass(){ return 10 + abilityMod(state.character.stats.dex) + (state.character.armorBonus||0); }
+// Loot formula: coins scale with the defeated enemy's max HP (already tuned to player level,
+// so HP itself is a fair proxy for "how tough was this fight"), with real d4 variance so it's
+// not a flat predictable number every time. Item-loot chance scales the same way, capped at
+// 70% so even a genuinely tough fight doesn't guarantee a drop.
+function calcLootCoins(maxHp){
+  const base = Math.max(1, Math.round(maxHp * 0.4));
+  const variance = rollDie(4) - 1; // 0-3 bonus, real dice
+  return base + variance;
+}
+function calcLootChancePct(maxHp){ return Math.min(70, 15 + maxHp * 1.5); }
+function rollLootChance(maxHp){ return (Math.random() * 100) < calcLootChancePct(maxHp); }
+function applyLootOnDefeat(creatureName, maxHp){
+  const c = state.character;
+  const coins = calcLootCoins(maxHp || 8);
+  c.coins += coins;
+  state.chat.push({ type:'note', text:`🪙 +${coins} coils looted from ${creatureName || 'the defeated enemy'} (now ${c.coins})` });
+  const gotItemLoot = rollLootChance(maxHp || 8);
+  if(gotItemLoot){
+    state.pendingLootRoll = { creatureName: creatureName || 'the enemy' }; // tells the DM a loot item should be narrated in
+  }
+  return { coins, gotItemLoot };
+}
 function passivePerception(){ return 10 + abilityMod(state.character.stats.wis); }
 function renderDiceModal(m){
   const dice = ['d4','d6','d8','d10','d12','d20'];
@@ -1339,6 +1385,7 @@ function renderDeathSaveModal(){
     <div class="sheet">
       <h3>Death Saving Throw</h3>
       <div class="flavor">At 0 HP. Rolling a d20: 10 or higher is a success, under 10 is a failure. A natural 20 revives you outright at 1 HP; a natural 1 counts as two failures. Three successes stabilizes you; three failures ends it.</div>
+      ${state.lastDeathSaveRoll != null ? `<div style="font-family:var(--mono); font-size:28px; text-align:center; color:var(--brass); margin:14px 0;">🎲 ${state.lastDeathSaveRoll}</div>` : ''}
       <div style="display:flex; justify-content:space-between; font-family:var(--mono); font-size:13px; margin:12px 0;">
         <span style="color:var(--teal);">✅ Successes: ${ds.successes}/3</span>
         <span style="color:var(--danger);">❌ Failures: ${ds.failures}/3</span>
@@ -1350,6 +1397,7 @@ function renderDeathSaveModal(){
 function rollDeathSave(){
   const c = state.character;
   const roll = rollDie(20);
+  state.lastDeathSaveRoll = roll;
   let note;
   if(roll === 20){
     c.hpCurrent = 1; c.hp = hpLabel(1, c.hpMax);
@@ -1372,7 +1420,13 @@ function rollDeathSave(){
     note += ' Stabilized — still at 0 HP, but no longer actively dying.';
   } else if(c.deathSaves.failures >= 3){
     state.pendingDeathSave = false;
-    note += state.settings.permadeath ? ' Three failures. This is the end.' : ' Three failures — narratively critical, but Hardcore Mode is off, so the story finds a way through.';
+    if(state.settings.permadeath){
+      note += ' Three failures. This is the end.';
+    } else {
+      const penalty = Math.min(Math.ceil(c.coins * 0.1), 500);
+      c.coins = Math.max(0, c.coins - penalty);
+      note += ` Three failures — narratively critical, but Hardcore Mode is off, so the story finds a way through. Cost: -${penalty} coils (now ${c.coins}) as the price of scraping by.`;
+    }
   }
   state.chat.push({ type:'note', text:note });
   if(!state.pendingDeathSave) state.modal = null;
@@ -1431,6 +1485,123 @@ function allocateStatPoint(key){
   persistSaveFiles();
   if(state.pendingStatPoint <= 0){ state.modal = null; }
   render();
+}
+function openAttackModal(){
+  if(!state.combat.active) return;
+  state.modal = { kind:'attack-picker' };
+  render();
+}
+function renderAttackModal(){
+  const c = state.character;
+  const combat = state.combat;
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>Choose Attack</h3>
+      <div class="flavor">vs ${escHtml(combat.creatureName)} (AC ${combat.enemyAC}) — ${combat.creatureHp}/${combat.creatureMaxHp} HP</div>
+      ${c.attacks.map(a=>`
+        <button class="pill-btn" style="display:block; width:100%; text-align:left; margin-bottom:8px;" onclick='chooseAttack(${escAttr(JSON.stringify(a.name))})'>
+          <div>${escHtml(a.name)} <span style="opacity:0.7;">(${a.type}, ${STAT_LABELS[a.stat]})</span></div>
+          <div style="font-size:11px; opacity:0.8; margin-top:2px;">${a.damageDie} ${escHtml(a.damageType)}${a.resourceCost?` · costs ${a.resourceCost.magicReserve} Magic Reserve`:''}</div>
+        </button>
+      `).join('')}
+      <div class="sheet-actions"><button class="btn-secondary" onclick="closeModal()">Cancel</button></div>
+    </div>
+  </div>`;
+}
+function chooseAttack(name){
+  const attack = state.character.attacks.find(a=>a.name===name);
+  if(!attack) return;
+  state.modal = null;
+  if(attack.resourceCost && attack.resourceCost.magicReserve){
+    // Route through the same approval gate as any other Magic Reserve spend — the attack
+    // itself only actually happens once that resolves, via resolveSpellCast's chaining.
+    state._pendingAttackAfterSpellCast = attack;
+    state.pendingSpellCast = { cost: attack.resourceCost.magicReserve, reason: attack.name };
+    render();
+    return;
+  }
+  executeAttack(attack);
+}
+function executeAttack(attack){
+  const c = state.character;
+  const combat = state.combat;
+  const modInfo = rollModifierFor({ stat: attack.stat }); // ability modifier + proficiency bonus — assumed proficient with your own defined attacks
+  const roll = rollDie(20);
+  const total = roll + modInfo.mod;
+  const hit = total >= combat.enemyAC;
+  state.chat.push({ type:'roll', text:`🎲 ${attack.name} attack: ${roll} ${modInfo.mod>=0?'+':''}${modInfo.mod} = ${total} vs AC ${combat.enemyAC} — ${hit?'HIT':'MISS'}` });
+  let damageTotal = 0, defeated = false, loot = null;
+  if(hit){
+    const dmgSides = parseInt(attack.damageDie.slice(1), 10);
+    const dmgRoll = rollDie(dmgSides);
+    const dmgMod = abilityMod(c.stats[attack.stat]); // damage uses the raw ability modifier only, not proficiency — real 5e rule
+    damageTotal = Math.max(0, dmgRoll + dmgMod);
+    combat.creatureHp = Math.max(0, combat.creatureHp - damageTotal);
+    state.chat.push({ type:'roll', text:`🎲 Damage: ${dmgRoll} ${dmgMod>=0?'+':''}${dmgMod} = ${damageTotal} ${attack.damageType} (${combat.creatureName} now ${combat.creatureHp}/${combat.creatureMaxHp} HP)` });
+    if(combat.creatureHp <= 0){
+      defeated = true;
+      const name = combat.creatureName, maxHp = combat.creatureMaxHp;
+      combat.active = false;
+      combat.statusEffects = [];
+      state.chat.push({ type:'note', text:`⚔️ ${name} defeated!` });
+      loot = applyLootOnDefeat(name, maxHp);
+    }
+  }
+  persistSaveFiles();
+  render();
+  const lootNote = defeated ? ` Looted ${loot.coins} coils.${loot.gotItemLoot ? ' An item loot chance succeeded — narrate an appropriate item drop and add it via inventory_updates.' : ''}` : '';
+  const summary = `(attacked with ${attack.name}: rolled ${total} vs AC ${combat.enemyAC} — ${hit ? `HIT, dealt ${damageTotal} ${attack.damageType} damage${defeated ? `, ${combat.creatureName} defeated.${lootNote}` : `, enemy now ${combat.creatureHp}/${combat.creatureMaxHp} HP`}` : 'MISS'})`;
+  sendAction(summary);
+}
+function openSpellCastModal(){
+  if(!state.pendingSpellCast) return;
+  state.modal = { kind:'spell-cast' };
+  render();
+}
+function renderSpellCastModal(){
+  const p = state.pendingSpellCast;
+  if(!p) return '';
+  const c = state.character;
+  const canAfford = c.magicReserve >= p.cost;
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Cast ${escHtml(p.reason)}?</h3>
+      <div style="font-family:var(--mono); color:var(--violet); font-size:22px; margin-bottom:6px;">✨ ${p.cost} Magic Reserve</div>
+      <div class="flavor">Current reserve: ${c.magicReserve}/${c.magicReserveMax}${canAfford ? ` → ${c.magicReserve - p.cost}/${c.magicReserveMax} after casting.` : ''}</div>
+      ${!canAfford ? `<div class="flavor" style="color:var(--danger); margin-top:8px;">Not enough Magic Reserve — attempting this will fizzle instead of casting.</div>` : ''}
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="resolveSpellCast(false)">Decline</button>
+        <button class="btn-primary" onclick="resolveSpellCast(true)" style="${canAfford?'':'background:var(--danger); border-color:var(--danger);'}">${canAfford ? 'Cast' : 'Attempt Anyway (fizzles)'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function resolveSpellCast(accept){
+  const p = state.pendingSpellCast;
+  if(!p) return;
+  const c = state.character;
+  state.pendingSpellCast = null;
+  state.modal = null;
+  const pendingAttack = state._pendingAttackAfterSpellCast;
+  state._pendingAttackAfterSpellCast = null;
+  if(accept && c.magicReserve >= p.cost){
+    c.magicReserve -= p.cost;
+    state.chat.push({ type:'note', text:`✨ -${p.cost} Magic Reserve (now ${c.magicReserve}/${c.magicReserveMax}) — ${p.reason}` });
+    persistSaveFiles();
+    render();
+    if(pendingAttack){ executeAttack(pendingAttack); }
+    // Otherwise, any requires_roll already staged for this turn surfaces next via the composer's normal priority chain — no DM round-trip needed for a successful cast.
+  } else if(accept && c.magicReserve < p.cost){
+    state.pendingRoll = null; // the attack/spell can't proceed without the charge to fuel it
+    state.chat.push({ type:'note', text:`💨 Not enough Magic Reserve — ${p.reason} fizzles.` });
+    persistSaveFiles();
+    sendAction(`(attempted ${p.reason} but it fizzled — not enough Magic Reserve)`);
+  } else {
+    state.pendingRoll = null;
+    state.chat.push({ type:'note', text:`Declined to spend Magic Reserve on ${p.reason}.` });
+    persistSaveFiles();
+    sendAction(`(declined to cast ${p.reason})`);
+  }
 }
 function openPaymentModal(){
   if(!state.pendingPayment) return;
@@ -1497,6 +1668,43 @@ function resolveItem(keep){
   }
   state.modal = null;
   state.pendingItemClaim = null;
+  render();
+}
+function renderRetrieveModal(m){
+  const item = m.item;
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>Take It Back?</h3>
+      <div style="font-family:var(--mono); color:var(--teal); font-size:14px; margin-bottom:6px;">${escHtml(item.name)}${item.qty>1?` ×${item.qty}`:''}</div>
+      <div class="flavor">${escHtml(item.desc || '')}</div>
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="resolveRetrieve(false)">Leave it there</button>
+        <button class="btn-primary" onclick="resolveRetrieve(true)">Take it</button>
+      </div>
+    </div>
+  </div>`;
+}
+function resolveRetrieve(take){
+  const item = state.modal.item;
+  const stashIdx = state.modal.stashIndex;
+  if(take){
+    const c = state.character;
+    if(c.inventory.includes(item.name) || isEquipped(item.name)){
+      // Merge back into the existing stack rather than creating a second, duplicate entry.
+      c.itemQty[item.name] = (c.itemQty[item.name] || 1) + item.qty;
+    } else {
+      c.inventory.push(item.name);
+      c.itemInfo[item.name] = { desc: item.desc||'', damage: item.damage||null, armor: (item.armor!=null?item.armor:null), statBonus: item.statBonus||null };
+      if(item.qty > 1) c.itemQty[item.name] = item.qty;
+    }
+    if(stashIdx != null && state.stashes[stashIdx]) state.stashes.splice(stashIdx, 1);
+    state.chat.push({ type:'note', text:`📦 Took back: ${item.name}${item.qty>1?` ×${item.qty}`:''}` });
+  } else {
+    state.chat.push({ type:'note', text:`Left ${item.name} where it was.` });
+  }
+  state.modal = null;
+  state.pendingItemClaim = null;
+  persistSaveFiles();
   render();
 }
 
@@ -1792,8 +2000,9 @@ function itemLedClass(name, desc){
 }
 function itemRow(name){
   const meta = normalizeItemMeta(state.character.itemInfo && state.character.itemInfo[name]);
+  const qty = state.character.itemQty[name] || 1;
   return `<div class="item-row ${itemLedClass(name, meta.desc)}" onclick='openItemInfo(${escAttr(JSON.stringify(name))})'>
-    <div class="item-row-name">${escHtml(name)}</div>
+    <div class="item-row-name">${escHtml(name)}${qty>1?` <span style="color:var(--brass);">×${qty}</span>`:''}</div>
     <span class="item-row-arrow">›</span>
   </div>`;
 }
@@ -1826,7 +2035,7 @@ function renderInventoryTab(){
     <div class="subhead">Stashed Elsewhere</div>
     ${state.stashes.length ? state.stashes.map(s=>`
       <div class="item-row led-dim" onclick='openItemInfo(${escAttr(JSON.stringify(s.name))})'>
-        <div class="item-row-name">${escHtml(s.name)}<div style="font-size:10px; color:var(--brass); margin-top:2px;">Left at: ${escHtml(s.location)}</div></div>
+        <div class="item-row-name">${escHtml(s.name)}${s.qty>1?` <span style="color:var(--brass);">×${s.qty}</span>`:''}<div style="font-size:10px; color:var(--brass); margin-top:2px;">Left at: ${escHtml(s.location)}</div></div>
       </div>
     `).join('') : `<div class="flavor" style="border:none;">Nothing stashed.</div>`}
   `;
@@ -2007,6 +2216,9 @@ function renderStatusTab(){
       <button class="pill-btn" onclick="openFilePreview('party')">party.md</button>
       <button class="pill-btn" onclick="openFilePreview('session_log')">session_log.md</button>
     </div>
+    <div class="ref-row">
+      <button class="pill-btn" onclick="openFilePreview('creatures')">creatures.md</button>
+    </div>
     <div class="subhead">Settings</div>
     <div class="status-field">
       <label>Hardcore Mode (permadeath)</label>
@@ -2107,7 +2319,14 @@ These are the campaign's save files — read them first and treat them as source
 
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
 requires_roll.stat: for non-magic checks, set this to whichever of the six D&D ability scores (str/dex/con/int/wis/cha) actually fits the action — the app adds that score's real ability modifier plus proficiency bonus to the roll automatically. Str for forcing/breaking/lifting, Dex for precision/stealth/reflexes, Con for enduring/resisting physical strain, Int for reading tech/relics/puzzles, Wis for perception/instinct/staying composed, Cha for social/scheming/presence. Leave it null specifically for magic/grounding-based rolls (the existing water/stone/wet mechanic), which keep working exactly as before.
-Attacks & skills: the character sheet in your context lists named attacks (with type, associated stat, damage die, damage type, and any resource cost) and named skills (proficient or not, D&D-style — proficient adds proficiency bonus, untrained doesn't). When the player uses one — invokes a named attack, or clearly does something a named skill covers — set requires_roll.stat to that attack/skill's stat, and requires_roll.skill to the exact skill name if a skill applies (attacks don't use this field, only skills do). For an attack that costs Magic Reserve, apply that cost via character_status.magic_reserve the same turn it's used, whether the roll hits or not — the cost is for attempting it. On a hit, damage = the attack's damage die + the same ability modifier, applied as a negative character_status.hp_delta to whatever's being hit (the enemy, via combat.enemy_hp — not the player's own HP, unless the player is the one taking damage).
+Combat engine: when combat starts, set combat.enemy_ac, combat.enemy_attack_bonus, combat.enemy_damage_die, and combat.enemy_damage_type once, alongside enemy_name/hp — pick numbers that fit the creature's threat level (a rat might be AC 10, +1, d4; something dangerous might be AC 14, +4, d8). These persist automatically turn to turn — you don't need to resupply them on later turns unless they should actually change (an enemy getting weaker, buffed, etc). Once set, the player has their own Attack button that resolves their attack roll, hit/miss against your stored AC, damage roll, HP loss, and defeat entirely in code — you'll receive a factual summary afterward ("attacked with Focus Pulse: rolled 14 vs AC 11 — HIT, dealt 5 force damage, enemy now 3/8 HP") to narrate around, not to recompute or second-guess.
+Monster tiers (scale to the player's current level, shown in context — a level 1 party should mostly face Trivial/Weak, occasional Moderate; scale up as the player levels): Trivial (HP 4-8, AC 8-10, atk +0/+1, dmg d4) — Weak (HP 8-15, AC 10-12, atk +1/+2, dmg d4-d6) — Moderate (HP 15-30, AC 12-14, atk +2/+4, dmg d6-d8) — Tough (HP 30-50, AC 14-16, atk +4/+6, dmg d8-d10) — Dangerous (HP 50+, AC 16+, atk +6+, dmg d10+). Use these as a starting point, not a rigid cage — a specific creature can bend a stat for flavor, but the overall tier should still roughly match the player's level so fights stay fair.
+Loot on defeat: the app automatically loots coins from any defeated enemy the moment it's actually defeated (whether via the Attack button or freeform combat) — real dice, scaled to the enemy's max HP, you don't compute or award this yourself. Roughly 40% of max HP in coils plus 0-3 variance (an 8 HP enemy nets ~3-5 coils, a 30 HP enemy ~13-15). Item loot is a separate chance roll (also automatic, scaling with HP, capped around 70%) — when it succeeds you'll see "LOOT OWED" in context; narrate a specific item fitting that creature and add it via inventory_updates.add that same turn. Don't invent additional coin or item rewards for a kill beyond what the app already grants — this is the actual loot, not a suggestion.
+Creature log: check the CREATURE LOG in context before setting a new enemy's stats — if a creature type has appeared before, reuse its exact logged stats instead of inventing new ones, so the same kind of monster is consistent every time it's fought. The first time a genuinely new creature type appears, log it via creature_log_add with its name, location (where it was found), tier, hp/ac/attack_bonus/damage_die/damage_type, a short description, and loot_notes (what it tends to drop thematically, even though the actual coin/chance math is automatic). This becomes creatures.md, a real reusable bestiary file.
+Attacks & skills (for anything outside that structured flow — freeform actions, skill checks, non-combat attack description): the character sheet in your context lists named attacks (type, stat, damage die, damage type, resource cost) and named skills (proficient or not). When the player describes using one in freeform text rather than the Attack button, set requires_roll.stat to that attack/skill's stat, and requires_roll.skill for a skill (attacks don't use this field). For an attack that costs Magic Reserve, set character_status.spend_magic_reserve/spend_magic_reason — the app gates this for approval and fizzles it automatically if unaffordable, don't gate it yourself. On a hit, damage always comes from an actual resolved roll (never a number you simply state) — the damage die + the same ability modifier, applied as a negative character_status.hp_delta to whatever's being hit. This "always roll it, never narrate a number" rule applies universally, including ongoing status-effect damage (fire, poison, etc.) and hazard/environmental damage.
+Damage causality: the player only takes damage from an enemy that is both still alive (combat.enemy_hp above 0) and actually attacking that turn — never apply a negative hp_delta to the player from an enemy that was already defeated in a prior turn, and never let combat.active go false in the same response that also damages the player from that same fight, unless the narration clearly explains a distinct cause (a trap, a separate hazard) rather than the "defeated" enemy itself.
+Turn order in combat: strictly alternating, never compressed together. The player's entire turn — their roll(s), the resolution coming back, any resulting damage actually applied — must fully complete before the enemy's turn is narrated at all. Don't have the enemy retaliate, attack, or deal damage in the same response where the player's own damage roll just resolved; that's a second turn happening inside what should still be the player's turn. The enemy's turn is its own separate beat, in a following response, after the player's turn has genuinely finished.
+Enemy/NPC rolls: use requires_hidden_roll instead of requires_roll for anything the enemy itself rolls (its attack roll against the player's AC, its own damage die) — the player has nothing to tap for the enemy's own actions, but it still needs to be real dice, not a number you state. Give it {die:"d20", bonus: combat.enemy_attack_bonus, vs_ac: the player's current AC from context, reason}. For a full enemy attack in one step, also set then_damage: {die: combat.enemy_damage_die, bonus, type: combat.enemy_damage_type} — if the attack roll hits, the app automatically rolls that damage too and applies it directly to the player's HP, so you don't need a second round-trip just for damage. This resolves immediately and shows the result as a transparent chat note, then automatically continues your turn with the real numbers — you don't need to wait on the player for this one.
 Saving throws vs. checks: when danger is being resisted rather than actively attempted (dodging a blast, resisting fear, shrugging off poison), set requires_roll.save true instead of requires_roll.skill — the app checks save proficiency, not skill proficiency, for the bonus. A bare ability check (stat set, no skill, no save) gets no proficiency bonus at all, same as real D&D — that's correct, not a bug.
 Advantage/disadvantage: set requires_roll.advantage or requires_roll.disadvantage (never both) when the situation genuinely warrants it — real advantage from a clear edge (attacking a prone or blinded target, a well-set-up action), real disadvantage from a real hindrance (attacking while restrained, an ill-advised action under duress). Don't reach for this often; it should feel earned.
 Armor Class & Passive Perception: the character sheet in context includes both — check AC when narrating whether an incoming attack would hit, and use Passive Perception to decide what the player notices without them needing to roll for it.
@@ -2122,6 +2341,8 @@ Validity check: before narrating an action forward, ask whether it's actually po
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
 Equipping now uses real slots, not an unstructured list — inventory_updates.equip needs {name, slot}, slot being "head", "body", "feet", "accessory", "hand1h" (one-handed), or "hand2h" (two-handed, uses both hand slots at once). Head/Body/Feet/Accessory are single-item slots — equipping something new there automatically swaps the old item back to inventory, it doesn't just add on top or block. Hands have a real 2-slot capacity (unless the character has a special ability granting extraHandCapacity) — a one-handed item costs 1, two-handed costs both, and the app will refuse an equip that doesn't fit (pushing a note explaining why) rather than silently allowing it. Don't narrate an item as successfully equipped without actually setting this field with the correct slot.
+Giving an item to a companion (Bex/Thrum): use inventory_updates.stash with location set to the companion's name (e.g. "with Bex") — this removes it from the player's inventory immediately, no confirmation needed, same as any other drop. When the player later asks for it back, use inventory_updates.retrieve — this now surfaces a real accept/decline prompt to the player (they might say no), it doesn't just silently return.
+Stacked/countable items (glow-sticks, coins-like consumables, ammo, etc.): use the qty field, don't bake a count into the item's name. inventory_updates.add takes an optional qty (defaults to 1) — using add again for an item the player already has grows the existing stack rather than being ignored. To give away or use up part of a stack without removing the whole thing, use inventory_updates.adjust_qty ({name, delta}) — negative to reduce, positive to add back — the app removes the item entirely once its count reaches zero. inventory_updates.stash also takes an optional qty for splitting off part of a stack (e.g. giving 1 of 3 glow-sticks to Bex) while the rest stays with the player.
 Item condition: if an item's actual state isn't normal/pristine — broken, out of charge, modified, cracked, jury-rigged, drained — say so directly in its name with a short parenthetical (e.g. "Focus-tool (drained)", "Rusted key (bent)"), not just buried in the description, so it's visible at a glance in the inventory list. When an item's condition changes during play (it breaks, runs out of power, gets fixed, gets modified), use inventory_updates.update with the exact old_name so it's renamed in place rather than treated as a new separate item — don't just narrate the change and leave the inventory list stale.
 Stashing vs. dropping: if the player leaves an item somewhere with any intent to come back for it — hides it, stores it, tucks it away for later — use inventory_updates.stash (with a specific location), not drop. Dropped items are gone for good with no record; stashed items are tracked and can be picked back up later via inventory_updates.retrieve, even many turns later, since the stash list is always in your context regardless of how long it's been.
 Important distinction for inventory_updates.add and item_found: merely describing that an item exists in the scene — a vendor has it for sale, it's sitting in a pile, an NPC is holding it — is NOT the same as the player having it. Never call add or item_found in the same turn an item is first introduced, unless the player's action THAT turn is what caused them to actually receive it (they paid, it was handed to them, they already declared they're taking it). If you've just described something as available/present and the player hasn't chosen to acquire it yet, only narrate — leave inventory_updates and item_found untouched, and let the player's next action (buying it, taking it, asking its price) be what actually triggers the change, on a later turn.
@@ -2192,6 +2413,10 @@ Unique Events: ${state.quests.unique.map(q=>questContextLine(q)).join(' | ') || 
 
 STASHED ITEMS (left behind somewhere specific, not currently carried — use inventory_updates.retrieve if the player goes back for one):
 ${state.stashes.map(s=>`${s.name} — left at: ${s.location}`).join(' | ') || '(none)'}
+${state.pendingLootRoll ? `\nLOOT OWED: an item-loot chance succeeded when ${state.pendingLootRoll.creatureName} was defeated, not yet narrated — describe an appropriate item drop this turn and add it via inventory_updates.add.\n` : ''}
+
+CREATURE LOG (check here first for any creature that might recur — reuse its exact stats via combat.enemy_ac/enemy_attack_bonus/enemy_damage_die/enemy_damage_type rather than inventing new numbers; log a NEW creature type the first time it appears via creature_log_add):
+${state.creatureLog.length ? state.creatureLog.map(cr=>`${cr.name} (${cr.location}, ${cr.tier}) — HP ${cr.hp}, AC ${cr.ac}, atk +${cr.attackBonus}, ${cr.damageDie} ${cr.damageType}`).join(' | ') : '(none logged yet)'}
 
 SETTINGS:
 Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
@@ -2217,12 +2442,14 @@ const DM_TOOL_SCHEMA = {
         coins_delta:{type:["number","null"]},
         spend_reason:{type:["string","null"]},
         magic_reserve:{type:["number","null"]},
+        spend_magic_reserve:{type:["number","null"]},
+        spend_magic_reason:{type:["string","null"]},
         xp_delta:{type:["number","null"]},
         conditions_add:{type:"array",items:{type:"string"}},
         conditions_remove:{type:"array",items:{type:"string"}},
         exhaustion_delta:{type:["number","null"]},
         rest:{type:["string","null"],enum:["short","long",null]}
-      }, required:["hp_delta","coins_delta","spend_reason","magic_reserve","xp_delta","conditions_add","conditions_remove","exhaustion_delta","rest"] },
+      }, required:["hp_delta","coins_delta","spend_reason","magic_reserve","spend_magic_reserve","spend_magic_reason","xp_delta","conditions_add","conditions_remove","exhaustion_delta","rest"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
         where_we_are:{type:"string"},
@@ -2257,17 +2484,20 @@ const DM_TOOL_SCHEMA = {
         equip:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, slot:{type:"string",enum:["head","body","feet","accessory","hand1h","hand2h"]} }, required:["name","slot"] }},
         unequip:{type:"array",items:{type:"string"}},
         drop:{type:"array",items:{type:"string"}},
-        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} }, required:["name","desc","damage","armor","stat_bonus"] }},
+        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, qty:{type:["number","null"]}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} }, required:["name","desc","qty","damage","armor","stat_bonus"] }},
         update:{type:"array",items:{ type:"object", properties:{ old_name:{type:"string"}, new_name:{type:"string"}, new_desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} }, required:["old_name","new_name","new_desc","damage","armor","stat_bonus"] }},
-        stash:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, location:{type:"string"} }, required:["name","desc","location"] }},
+        adjust_qty:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, delta:{type:"number"} }, required:["name","delta"] }},
+        stash:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, location:{type:"string"}, qty:{type:["number","null"]} }, required:["name","desc","location","qty"] }},
         retrieve:{type:"array",items:{type:"string"}}
-      }, required:["equip","unequip","drop","add","update","stash","retrieve"] },
+      }, required:["equip","unequip","drop","add","update","adjust_qty","stash","retrieve"] },
       action_validity:{ type:"object", properties:{
         valid:{type:"boolean"},
         reason:{type:["string","null"]}
       }, required:["valid","reason"] },
-      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]}, status_effects:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, icon:{type:"string"}, turns_left:{type:"number"} }, required:["name","icon","turns_left"] }} }, required:["active","enemy_name","enemy_hp","enemy_max_hp","status_effects"] },
+      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]}, status_effects:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, icon:{type:"string"}, turns_left:{type:"number"} }, required:["name","icon","turns_left"] }}, enemy_ac:{type:["number","null"]}, enemy_attack_bonus:{type:["number","null"]}, enemy_damage_die:{type:["string","null"]}, enemy_damage_type:{type:["string","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp","status_effects","enemy_ac","enemy_attack_bonus","enemy_damage_die","enemy_damage_type"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"}, stat:{type:["string","null"],enum:["str","dex","con","int","wis","cha",null]}, skill:{type:["string","null"]}, save:{type:"boolean"}, advantage:{type:"boolean"}, disadvantage:{type:"boolean"} } },
+      requires_hidden_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, bonus:{type:"number"}, vs_ac:{type:["number","null"]}, reason:{type:"string"}, then_damage:{type:["object","null"],properties:{die:{type:"string"},bonus:{type:"number"},type:{type:"string"}}} } },
+      creature_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, location:{type:"string"}, tier:{type:"string"}, hp:{type:"number"}, ac:{type:"number"}, attack_bonus:{type:"number"}, damage_die:{type:"string"}, damage_type:{type:"string"}, description:{type:"string"}, loot_notes:{type:"string"} }, required:["name","location","tier","hp","ac","attack_bonus","damage_die","damage_type","description","loot_notes"] }},
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
@@ -2396,7 +2626,7 @@ function buildStateSnapshot(){
   const c = state.character;
   return {
     hp:c.hp, magic_grounding:c.magicCharge, quest:c.quest,
-    combat: { active:state.combat.active, enemy_name:state.combat.creatureName||null, enemy_hp:state.combat.active?state.combat.creatureHp:null, enemy_max_hp:state.combat.active?state.combat.creatureMaxHp:null }
+    combat: { active:state.combat.active, enemy_name:state.combat.creatureName||null, enemy_hp:state.combat.active?state.combat.creatureHp:null, enemy_max_hp:state.combat.active?state.combat.creatureMaxHp:null, enemy_ac:state.combat.active?state.combat.enemyAC:null, enemy_attack_bonus:state.combat.active?state.combat.enemyAttackBonus:null, enemy_damage_die:state.combat.active?state.combat.enemyDamageDie:null, enemy_damage_type:state.combat.active?state.combat.enemyDamageType:null }
   };
 }
 function chatToApiHistory(){
@@ -2683,6 +2913,11 @@ async function sendAction(actionText, meta){
   }
   state.loading = false;
   render();
+  if(state._pendingHiddenRollFollowup){
+    const followup = state._pendingHiddenRollFollowup;
+    state._pendingHiddenRollFollowup = null;
+    sendAction(followup.actionText, { resolution: followup.resolution, skipPlayerBubble:true });
+  }
 }
 async function applyDMResponse(d, meta, originalActionText, existingMsgRef, provider){
   meta = meta || {};
@@ -2728,6 +2963,9 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     }
   }
   if(d.character_status && d.character_status.magic_reserve != null) state.character.magicReserve = Math.max(0, Math.min(state.character.magicReserveMax, d.character_status.magic_reserve));
+  if(d.character_status && d.character_status.spend_magic_reserve){
+    state.pendingSpellCast = { cost: d.character_status.spend_magic_reserve, reason: d.character_status.spend_magic_reason || 'a spell' };
+  }
   if(d.character_status && d.character_status.xp_delta){
     const before = state.character.level;
     const result = applyXpDelta(d.character_status.xp_delta);
@@ -2762,8 +3000,21 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   if(d.quest && d.quest.current) state.character.quest = d.quest.current;
   if(d.combat){
     if(d.combat.active){
-      state.combat = { active:true, creatureName:d.combat.enemy_name||'Unknown Foe', creatureHp:d.combat.enemy_hp??10, creatureMaxHp:d.combat.enemy_max_hp??10, statusEffects:d.combat.status_effects||[] };
+      const wasActive = state.combat.active;
+      state.combat = {
+        active:true,
+        creatureName:d.combat.enemy_name||'Unknown Foe',
+        creatureHp:d.combat.enemy_hp??10,
+        creatureMaxHp:d.combat.enemy_max_hp??10,
+        statusEffects:d.combat.status_effects||[],
+        enemyAC: d.combat.enemy_ac != null ? d.combat.enemy_ac : (wasActive ? state.combat.enemyAC : 10),
+        enemyAttackBonus: d.combat.enemy_attack_bonus != null ? d.combat.enemy_attack_bonus : (wasActive ? state.combat.enemyAttackBonus : 0),
+        enemyDamageDie: d.combat.enemy_damage_die || (wasActive ? state.combat.enemyDamageDie : 'd6'),
+        enemyDamageType: d.combat.enemy_damage_type || (wasActive ? state.combat.enemyDamageType : 'physical'),
+      };
     } else if(state.combat.active){
+      // Freeform DM-narrated defeat (not via the Attack button) — still gets real loot.
+      applyLootOnDefeat(state.combat.creatureName, state.combat.creatureMaxHp);
       state.combat.active = false;
       state.combat.statusEffects = [];
     }
@@ -2875,12 +3126,20 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     (d.inventory_updates.drop||[]).forEach(name=>{
       const ii = c.inventory.indexOf(name); if(ii>=0){ c.inventory.splice(ii,1); inventoryChanged = true; }
       if(unequipItem(name)) inventoryChanged = true;
+      delete c.itemQty[name];
     });
     (d.inventory_updates.add||[]).forEach(entry=>{
       const name = entry.name, desc = entry.desc || '';
-      if(!c.inventory.includes(name) && !isEquipped(name)){
+      const qty = entry.qty || 1;
+      if(state.pendingLootRoll) state.pendingLootRoll = null; // fulfilled — this item counts as the owed loot narration
+      if(c.inventory.includes(name) || isEquipped(name)){
+        // Already carrying this one — grow the existing stack instead of silently doing nothing.
+        c.itemQty[name] = (c.itemQty[name] || 1) + qty;
+        inventoryChanged = true;
+      } else {
         c.inventory.push(name);
         c.itemInfo[name] = { desc, damage: entry.damage||null, armor: (entry.armor!=null?entry.armor:null), statBonus: entry.stat_bonus||null };
+        if(qty > 1) c.itemQty[name] = qty;
         newlyGained.push({ name, desc });
         inventoryChanged = true;
       }
@@ -2904,29 +3163,64 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
           armor: u.armor !== undefined ? u.armor : prevMeta.armor,
           statBonus: u.stat_bonus !== undefined ? u.stat_bonus : prevMeta.statBonus,
         };
+        if(c.itemQty[u.old_name] != null){ c.itemQty[u.new_name] = c.itemQty[u.old_name]; delete c.itemQty[u.old_name]; }
       }
     });
+    (d.inventory_updates.adjust_qty||[]).forEach(a=>{
+      const current = c.itemQty[a.name] || (c.inventory.includes(a.name) ? 1 : 0);
+      if(current <= 0) return; // don't have any of this to adjust
+      const next = current + a.delta;
+      if(next <= 0){
+        delete c.itemQty[a.name];
+        const idx = c.inventory.indexOf(a.name); if(idx>=0) c.inventory.splice(idx,1);
+      } else {
+        c.itemQty[a.name] = next;
+      }
+      inventoryChanged = true;
+    });
     (d.inventory_updates.stash||[]).forEach(s=>{
-      const ii = c.inventory.indexOf(s.name); if(ii>=0) c.inventory.splice(ii,1);
-      unequipItem(s.name);
-      if(!state.stashes.some(existing=>existing.name===s.name)){
-        const existingMeta = normalizeItemMeta(c.itemInfo[s.name]);
-        state.stashes.push({ name:s.name, desc: s.desc || existingMeta.desc || '', location:s.location||'unspecified location', damage: existingMeta.damage, armor: existingMeta.armor, statBonus: existingMeta.statBonus });
+      const currentQty = c.itemQty[s.name] || (c.inventory.includes(s.name) ? 1 : 0);
+      const stashQty = (s.qty && s.qty < currentQty) ? s.qty : currentQty;
+      if(stashQty <= 0) return; // don't have any to give
+      const remaining = currentQty - stashQty;
+      if(remaining > 0){
+        c.itemQty[s.name] = remaining; // partial stash — rest stays in inventory
+      } else {
+        const ii = c.inventory.indexOf(s.name); if(ii>=0) c.inventory.splice(ii,1);
+        delete c.itemQty[s.name];
+        unequipItem(s.name);
+      }
+      const existingMeta = normalizeItemMeta(c.itemInfo[s.name]);
+      const existingStash = state.stashes.find(e=>e.name===s.name && e.location===(s.location||'unspecified location'));
+      if(existingStash){
+        existingStash.qty = (existingStash.qty||1) + stashQty; // merge into an existing stash entry at the same location
+      } else {
+        state.stashes.push({ name:s.name, desc: s.desc || existingMeta.desc || '', location:s.location||'unspecified location', qty: stashQty, damage: existingMeta.damage, armor: existingMeta.armor, statBonus: existingMeta.statBonus });
       }
       inventoryChanged = true;
     });
     (d.inventory_updates.retrieve||[]).forEach(name=>{
+      if(state.pendingItemClaim) return; // only one claim prompt at a time
       const idx = state.stashes.findIndex(s=>s.name===name);
       if(idx>=0){
-        const stashed = state.stashes.splice(idx,1)[0];
-        if(!c.inventory.includes(stashed.name) && !isEquipped(stashed.name)){
-          c.inventory.push(stashed.name);
-          c.itemInfo[stashed.name] = { desc: stashed.desc||'', damage: stashed.damage||null, armor: (stashed.armor!=null?stashed.armor:null), statBonus: stashed.statBonus||null };
-        }
-        inventoryChanged = true;
+        const stashed = state.stashes[idx]; // not removed yet — only once actually claimed
+        state.pendingItemClaim = { kind:'retrieve', item: { name:stashed.name, desc:stashed.desc, damage:stashed.damage, armor:stashed.armor, statBonus:stashed.statBonus, qty: stashed.qty||1 }, stashIndex: idx };
       }
     });
   }
+
+  (d.creature_log_add||[]).forEach(entry=>{
+    const existingIdx = state.creatureLog.findIndex(cr=>cr.name===entry.name);
+    const record = {
+      name: entry.name, location: entry.location, tier: entry.tier,
+      hp: entry.hp, ac: entry.ac, attackBonus: entry.attack_bonus,
+      damageDie: entry.damage_die, damageType: entry.damage_type,
+      description: entry.description, lootNotes: entry.loot_notes,
+      firstEncountered: existingIdx>=0 ? state.creatureLog[existingIdx].firstEncountered : state.sessionMeta.whereWeAre,
+    };
+    if(existingIdx>=0) state.creatureLog[existingIdx] = record;
+    else state.creatureLog.push(record);
+  });
 
   if(d.item_found){
     if(!state.character.itemInfo) state.character.itemInfo = {};
@@ -2936,6 +3230,31 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     state.pendingItemClaim = { kind:'items-gained', items:newlyGained };
   } else if(d.requires_roll){
     state.pendingRoll = d.requires_roll;
+  } else if(d.requires_hidden_roll){
+    // An enemy/NPC roll — no player interaction needed, but still genuine client-side RNG,
+    // not a number the DM just states. Shown transparently as a chat note either way.
+    const req = d.requires_hidden_roll;
+    const sides = parseInt(req.die.slice(1), 10);
+    const roll = rollDie(sides);
+    const bonus = req.bonus || 0;
+    const total = roll + bonus;
+    const hit = req.vs_ac != null ? (total >= req.vs_ac) : null;
+    let label = `🎲 ${req.reason || 'Enemy roll'}: ${roll}${bonus?` ${bonus>=0?'+':''}${bonus} = ${total}`:''}`;
+    if(hit != null) label += hit ? ' — hits!' : ' — misses!';
+    state.chat.push({ type:'roll', text: label });
+    let damageTotal = null;
+    if(hit && req.then_damage){
+      const dmgSides = parseInt(req.then_damage.die.slice(1), 10);
+      const dmgRoll = rollDie(dmgSides);
+      const dmgBonus = req.then_damage.bonus || 0;
+      damageTotal = Math.max(0, dmgRoll + dmgBonus);
+      applyHpDelta(-damageTotal);
+      state.chat.push({ type:'roll', text:`🎲 Damage: ${dmgRoll} ${dmgBonus>=0?'+':''}${dmgBonus} = ${damageTotal} ${req.then_damage.type||''} (you: ${state.character.hpCurrent}/${state.character.hpMax} HP)` });
+    }
+    state._pendingHiddenRollFollowup = {
+      actionText: `(hidden roll resolved: ${req.reason})`,
+      resolution: { die:req.die, roll, modifier:bonus, total, reason:req.reason, vs_ac: req.vs_ac ?? null, hit, damage_dealt: damageTotal }
+    };
   }
 
   await persistSaveFiles();
@@ -2957,7 +3276,7 @@ function downloadMarkdown(filename, content){
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md' };
+const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md', creatures:'creatures.md' };
 
 // ---- Import: reverse of buildFileContent(), for loading real files back in ----
 function splitTopLevelCommas(str){
@@ -3203,6 +3522,32 @@ function parseStashedItems(text){
     return m ? { name:m[1].trim(), desc:'', location:m[2].trim() } : null;
   }).filter(Boolean);
 }
+function parseCreaturesMd(text){
+  const creatures = [];
+  let currentLocation = null, current = null;
+  text.split('\n').forEach(line=>{
+    const locMatch = line.match(/^##\s+(.+)$/);
+    if(locMatch && !line.startsWith('###')){ currentLocation = locMatch[1].trim(); return; }
+    const nameMatch = line.match(/^###\s+(.+)$/);
+    if(nameMatch){
+      if(current) creatures.push(current);
+      current = { name: nameMatch[1].trim(), location: currentLocation || 'Unknown', tier:'', hp:0, ac:0, attackBonus:0, damageDie:'d6', damageType:'physical', description:'', lootNotes:'', firstEncountered:'' };
+      return;
+    }
+    if(!current) return;
+    let m;
+    if(m = line.match(/^-\s*\*\*Tier:\*\*\s*(.+)$/i)){ current.tier = m[1].trim(); return; }
+    if(m = line.match(/^-\s*\*\*HP:\*\*\s*(\d+)/i)){ current.hp = parseInt(m[1],10); return; }
+    if(m = line.match(/^-\s*\*\*AC:\*\*\s*(\d+)/i)){ current.ac = parseInt(m[1],10); return; }
+    if(m = line.match(/^-\s*\*\*Attack Bonus:\*\*\s*\+?(-?\d+)/i)){ current.attackBonus = parseInt(m[1],10); return; }
+    if(m = line.match(/^-\s*\*\*Damage:\*\*\s*(\S+)\s+(.+)$/i)){ current.damageDie = m[1].trim(); current.damageType = m[2].trim(); return; }
+    if(m = line.match(/^-\s*\*\*Description:\*\*\s*(.+)$/i)){ current.description = m[1].trim(); return; }
+    if(m = line.match(/^-\s*\*\*Loot Notes:\*\*\s*(.+)$/i)){ current.lootNotes = m[1].trim(); return; }
+    if(m = line.match(/^-\s*\*\*First Encountered:\*\*\s*(.+)$/i)){ current.firstEncountered = m[1].trim(); return; }
+  });
+  if(current) creatures.push(current);
+  return creatures;
+}
 function parseSessionLogMd(text){
   const sessionMatches = [...text.matchAll(/\*\*Session:?\*\*\s*(\d+)/gi)];
   const sessionMatch = sessionMatches.length ? sessionMatches[sessionMatches.length-1] : null;
@@ -3233,6 +3578,7 @@ function detectFileKind(filename){
   if(norm.includes('worldbible')) return 'world_bible';
   if(norm === 'party' || norm.includes('party')) return 'party';
   if(norm.includes('sessionlog')) return 'session_log';
+  if(norm.includes('creatures')) return 'creatures';
   return null;
 }
 async function handleImportFiles(event){
@@ -3256,6 +3602,10 @@ async function handleImportFiles(event){
       Object.assign(state.sessionMeta, parsed);
       applyParsedQuests(parsedQuests);
       if(parsedStashes) state.stashes = parsedStashes;
+    }
+    else if(kind === 'creatures'){
+      const parsedCreatures = parseCreaturesMd(text);
+      if(parsedCreatures.length) state.creatureLog = parsedCreatures;
     }
     loaded.push(FILE_NAMES[kind]);
   }
@@ -3351,6 +3701,30 @@ ${c.skills.map(s=>`- **${s.name}** (${s.stat.toUpperCase()}) — ${s.desc} *(${s
 *Combat mechanics live in world_bible.md → Rules of This World, since they apply to the world/system, not just this character.*
 `;
   }
+  if(kind === 'creatures'){
+    const byLocation = {};
+    state.creatureLog.forEach(cr=>{
+      if(!byLocation[cr.location]) byLocation[cr.location] = [];
+      byLocation[cr.location].push(cr);
+    });
+    const locations = Object.keys(byLocation);
+    return `# Creatures Bestiary
+
+*Reference log of monster types encountered — reused for consistency when the same type appears again, rather than re-inventing stats each time. Stats are tuned to fit the player's level at first encounter. See world_bible.md → Rules of This World → How Monsters & Loot Work for the tier table and loot formula this is built from.*
+
+${locations.length ? locations.map(loc=>`## ${loc}
+${byLocation[loc].map(cr=>`### ${cr.name}
+- **Tier:** ${cr.tier}
+- **HP:** ${cr.hp}
+- **AC:** ${cr.ac}
+- **Attack Bonus:** +${cr.attackBonus}
+- **Damage:** ${cr.damageDie} ${cr.damageType}
+- **Description:** ${cr.description}
+- **Loot Notes:** ${cr.lootNotes}
+- **First Encountered:** ${cr.firstEncountered}
+`).join('\n')}`).join('\n') : '*(none logged yet)*'}
+`;
+  }
   if(kind === 'world_bible'){
     return `# World Bible
 
@@ -3415,6 +3789,12 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - Real slots, not an unlimited list: Head, Body, Feet, and two Accessory slots each hold exactly one item — equipping something new to an occupied slot swaps the old item back to inventory automatically.
 - Hands have a real 2-slot capacity: a one-handed item (most weapons, tools) costs 1, a two-handed item costs both. Can't equip beyond capacity — the app refuses it and explains why, rather than silently allowing it.
 - Extra hand capacity beyond the normal 2 only comes from a specific in-story ability (an extra limb, a summoned appendage, etc) — never assumed by default.
+
+### How Monsters & Loot Work
+- Five tiers, scaled to the player's current level so fights stay fair as they grow stronger: **Trivial** (HP 4-8, AC 8-10, atk +0/+1, dmg d4), **Weak** (HP 8-15, AC 10-12, atk +1/+2, dmg d4-d6), **Moderate** (HP 15-30, AC 12-14, atk +2/+4, dmg d6-d8), **Tough** (HP 30-50, AC 14-16, atk +4/+6, dmg d8-d10), **Dangerous** (HP 50+, AC 16+, atk +6+, dmg d10+).
+- A creature's AC, attack bonus, damage die, and damage type are set once when a fight starts and persist automatically — the player's Attack button resolves hit/miss and damage against those stored numbers in real code from then on, not narrative judgment.
+- **creatures.md** is a real reusable bestiary — the first time a creature type appears, its stats get logged there (grouped by location); every time that same type reappears, its exact stats are reused instead of being reinvented, so a Fire Slime is always the same Fire Slime.
+- **Loot on defeat** is automatic, real dice, not DM-awarded: coins are roughly 40% of the enemy's max HP plus 0-3 variance, applied the instant it's defeated. Item-loot is a separate chance roll (also HP-scaled, capped around 70%) — when it succeeds, a specific item still gets narrated in and added normally, but whether a drop happens at all is dice, not choice.
 
 ### How Getting Stronger Actually Works
 - Ability Score Improvements and rising Hit Points are real, but they're a slow trickle — most of a D&D character's power growth actually comes from unlocking new things to do, not bigger numbers on old things (a Fighter's Extra Attack, a Wizard's new spell levels, etc). There's no class system here, so Raken has a small hand-built table of level-gated unlocks instead: a new attack at level 3, an upgraded Improvised Strike at 5, a new skill at 7, an upgraded Focus Pulse at 10.
