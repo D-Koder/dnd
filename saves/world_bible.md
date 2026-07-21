@@ -82,11 +82,18 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 - **Skills** are named capabilities (Relic Read, Scheme, Ground & Channel, Jury-Rig for Raken) that are binary — proficient or not, same as real D&D, no ranks or point-buy. Being proficient adds the character's current proficiency bonus to a roll using that skill; untrained adds nothing beyond the raw ability modifier.
 - New skill proficiency choices are granted at levels 4, 8, 12, 16, and 19, alongside the Ability Score Improvement at those same levels — a homebrew adaptation, since there's no class/background here to hand out fixed proficiencies the normal way.
 - **Status effects** (fire, poison, bleed, etc.) on an enemy are tracked for display only — the DM still narrates and applies the ongoing damage each turn manually, the tracker just keeps it visible so it isn't forgotten.
+- **Items** carry the same kind of structured data when relevant — a weapon or tool-weapon can have a damage die/type, worn armor can have a flat AC bonus, and any item can carry an ability score bonus while equipped/carried. All three are optional per item and shown in the item's info panel alongside its description, not every item needs any of them.
 
 ### How Equipment Slots Work
 - Real slots, not an unlimited list: Head, Body, Feet, and two Accessory slots each hold exactly one item — equipping something new to an occupied slot swaps the old item back to inventory automatically.
 - Hands have a real 2-slot capacity: a one-handed item (most weapons, tools) costs 1, a two-handed item costs both. Can't equip beyond capacity — the app refuses it and explains why, rather than silently allowing it.
 - Extra hand capacity beyond the normal 2 only comes from a specific in-story ability (an extra limb, a summoned appendage, etc) — never assumed by default.
+
+### How Monsters & Loot Work
+- Five tiers, scaled to the player's current level so fights stay fair as they grow stronger: **Trivial** (HP 4-8, AC 8-10, atk +0/+1, dmg d4), **Weak** (HP 8-15, AC 10-12, atk +1/+2, dmg d4-d6), **Moderate** (HP 15-30, AC 12-14, atk +2/+4, dmg d6-d8), **Tough** (HP 30-50, AC 14-16, atk +4/+6, dmg d8-d10), **Dangerous** (HP 50+, AC 16+, atk +6+, dmg d10+).
+- A creature's AC, attack bonus, damage die, and damage type are set once when a fight starts and persist automatically — the player's Attack button resolves hit/miss and damage against those stored numbers in real code from then on, not narrative judgment.
+- **creatures.md** is a real reusable bestiary — the first time a creature type appears, its stats get logged there (grouped by location); every time that same type reappears, its exact stats are reused instead of being reinvented, so a Fire Slime is always the same Fire Slime.
+- **Loot on defeat** is automatic, real dice, not DM-awarded: coins are roughly 40% of the enemy's max HP plus 0-3 variance, applied the instant it's defeated. Item-loot is a separate chance roll (also HP-scaled, capped around 70%) — when it succeeds, a specific item still gets narrated in and added normally, but whether a drop happens at all is dice, not choice.
 
 ### How Getting Stronger Actually Works
 - Ability Score Improvements and rising Hit Points are real, but they're a slow trickle — most of a D&D character's power growth actually comes from unlocking new things to do, not bigger numbers on old things (a Fighter's Extra Attack, a Wizard's new spell levels, etc). There's no class system here, so Raken has a small hand-built table of level-gated unlocks instead: a new attack at level 3, an upgraded Improvised Strike at 5, a new skill at 7, an upgraded Focus Pulse at 10.
