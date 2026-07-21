@@ -602,7 +602,7 @@ function render(){
         : state.chat.map(renderChatItem).join('') + (state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : '')
       }</div>
       ${state.combat.active ? renderEnemyStrip() : ''}
-      ${state.lastOptions.length && !state.loading ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
+      ${state.lastOptions.length && !state.loading && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
       <div class="composer ${state.oocMode ? 'ooc-active' : ''}">
         ${state.pendingItemClaim ? `
           <button class="claim-item-btn" onclick="openPendingItemClaim()">
@@ -940,6 +940,32 @@ function renderQuestOverflowModal(){
     </div>
   </div>`;
 }
+function questCap(category){ return category==='side' ? 5 : category==='small' ? 10 : Infinity; }
+function makeQuestEntry(qs, entry){
+  return {
+    title: entry.title, desc: entry.desc,
+    goals: (entry.goals||[]).map(g=>({ text:g, done:false })),
+    reward: entry.reward || '',
+    status:'active', pinned:false, order: qs.nextOrder++
+  };
+}
+function addQuestOrOverflow(qs, category, entry){
+  const list = qs[category];
+  if(list.some(e=>e.title===entry.title)) return null;
+  const activeCount = list.filter(e=>e.status!=='complete').length;
+  if(activeCount < questCap(category)){
+    list.push(makeQuestEntry(qs, entry));
+    return 'added';
+  }
+  if(state.pendingQuestOverflow) return null; // only surface one overflow prompt per turn
+  const candidates = list.filter(e=>e.status!=='complete' && !e.pinned).sort((a,b)=>a.order-b.order);
+  state.pendingQuestOverflow = {
+    category,
+    newQuest: entry, // raw {title,desc,goals,reward} — turned into a full entry only if actually accepted
+    evictCandidate: candidates.length ? { title:candidates[0].title } : null
+  };
+  return 'deferred';
+}
 function resolveQuestOverflow(accept){
   const o = state.pendingQuestOverflow;
   if(!o) return;
@@ -954,7 +980,7 @@ function resolveQuestOverflow(accept){
         state.chat.push({ type:'note', text:`🧠 You've forgotten about the ${label} regarding "${o.evictCandidate.title}".` });
       }
     }
-    list.push({ title:o.newQuest.title, desc:o.newQuest.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+    list.push(makeQuestEntry(qs, o.newQuest));
     state.chat.push({ type:'note', text:`📜 New ${label} accepted: "${o.newQuest.title}"` });
   } else {
     state.chat.push({ type:'note', text:`Declined new ${label}: "${o.newQuest.title}"` });
@@ -1119,6 +1145,8 @@ function renderQuestTab(){
             ${cap ? `<button class="inv-remove" style="color:${x.pinned?'var(--brass)':'var(--teal)'}; white-space:nowrap;" onclick='toggleQuestPin(${escAttr(JSON.stringify(category))}, ${escAttr(JSON.stringify(x.title))})'>${x.pinned?'📌 pinned':'📌 pin'}</button>` : ''}
           </div>
           <div class="rc-meta" style="margin-top:4px;">${escHtml(x.desc)}</div>
+          ${(x.goals && x.goals.length) ? `<div style="margin-top:8px;">${x.goals.map(g=>`<div class="rc-meta" style="margin-top:2px;">${g.done?'✅':'⬜'} ${escHtml(g.text)}</div>`).join('')}</div>` : ''}
+          ${x.reward ? `<div class="rc-meta" style="margin-top:8px; color:var(--brass);">🎁 ${escHtml(x.reward)}</div>` : ''}
         </div>
       `).join('') : `<div class="flavor">None active.</div>`}
       ${done.length ? `<div class="flavor" style="margin-top:8px; font-size:11px;">✅ Completed: ${done.map(x=>escHtml(x.title)).join(', ')}</div>` : ''}
@@ -1478,12 +1506,13 @@ Quests (quest_updates) — four distinct categories, each with a different job. 
 - Small requests (new_small): the lightest tier — a single discrete, checkable fact or task, not a story arc. Examples: a favor asked in passing ("check on my sister when you're near the market"), a lead not yet investigated (a rumor, a tip), a code or mechanism worth remembering ("the loose floorboard in the warehouse"), a time-sensitive fact ("the shipment arrives in three days"), an identifying detail that might matter later (a scar, a tattoo). These exist so small but real details survive even many turns later instead of just vanishing from context — log one whenever the player is given or notices something like this that isn't important enough to be a full side quest.
 - Unique events (new_unique): rare and special. Mechanically simpler in scope than a main quest, but should be harder to actually pull off — a real challenge, not busywork. On completion these pay off big: epic loot, a meaningful coin reward, and something that unlocks new story or genuinely makes the main quest easier or more interesting going forward. These shouldn't appear often — when they do, they should feel like a real occasion.
 Mark a quest complete via quest_updates.complete (list its exact title) the turn it's actually finished — don't leave it lingering as active once its resolution has clearly happened in the story.
+Every quest at every tier (new_main/new_side/new_small/new_unique) needs real "goals" (2-4 short, concrete, checkable steps — not vague vibes, things you can tell whether the player has actually done) and a real "reward" describing what completing it grants. As individual goals get accomplished in play, mark them via quest_updates.goal_done (exact quest title + exact goal text) — don't wait until the very end to update anything, tick them off as they genuinely happen. The reward's size and nature should scale to the quest's actual complexity/tier (small requests get small rewards, unique events get real payoffs) and should fit the personality and means of whoever's offering it — a wealthy patron offers differently than a struggling fisherman, a generous NPC differently than a stingy one; don't default to a generic reward disconnected from who's actually giving it.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
 Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Critical: never apply a negative coins_delta (spending) unless the player has explicitly said they're paying/buying/agreeing to the cost — a price being mentioned or a vendor naming a number is not consent, only the player's own action is. If the player hasn't clearly chosen to spend, narrate the offer and wait.
 Resource consistency: before stating any price or cost, check the player's current coins in the character sheet — don't quote a number they can't actually afford unless that's a deliberate narrative beat (a vendor is out of their league, a price is meant to be a real obstacle right now). If the story means for them to be able to afford something, the price should fit what they actually have.
 Magic reserve (character_status.magic_reserve): a small spendable pool, separate from the per-roll grounding modifier, representing the character's capacity for real magical effort. Set it to the new absolute value only when it changes — spend 1 or more on genuinely significant spellwork (not routine use of the grounding-based rolls), and it can be recovered through rest or time spent properly grounded. Leave it null on ordinary turns where nothing about it changed.
-response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
+response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. Return fewer (including zero) when you've just asked the player a direct yes/no question. Always return zero when this response sets requires_roll or item_found, or adds a quest/request that might be capacity-deferred — the app hides suggested options in those moments so the player has to actually resolve the roll/claim/quest prompt rather than tapping past it, so there's no point generating them.
 Voice consistency (important): this exact instruction set may be run by different underlying models on different turns, so tone must come from these rules, not from any one model's default style. Keep narration to 2-4 short, plain sentences — no flowery/purple prose, no rhetorical questions to the player, no excessive metaphor stacking. Bex's lines are short, sarcastic, one beat of a joke at most — never a paragraph. Thrum's lines are terse, deadpan, often under 10 words. Keep response_options short and concrete (under ~15 words each), same phrasing style every turn. If in doubt, err toward shorter and plainer — consistency matters more than any single clever line.
 Keep narration to 2-4 short sentences. Always respond by calling the dm_response tool — never plain text.`;
 }
@@ -1516,11 +1545,11 @@ Current quest/hook: ${state.character.quest}
 Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none yet)'}
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
 
-QUESTS (do not exceed 1-2 active Main Quests — check the count below before adding another; capacity for Side/Small is app-managed, don't worry about their limits):
-Main (${state.quests.main.filter(q=>q.status!=='complete').length} active): ${state.quests.main.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}`).join(' | ') || '(none yet)'}
-Side: ${state.quests.side.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''}`).join(' | ') || '(none yet)'}
-Small Requests: ${state.quests.small.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''}`).join(' | ') || '(none yet)'}
-Unique Events: ${state.quests.unique.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}`).join(' | ') || '(none yet)'}
+QUESTS (do not exceed 1-2 active Main Quests — check the count below before adding another; capacity for Side/Small is app-managed, don't worry about their limits). Goal checkboxes shown as [x]/[ ]:
+Main (${state.quests.main.filter(q=>q.status!=='complete').length} active): ${state.quests.main.map(q=>`${q.title}${q.status==='complete'?' [complete]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
+Side: ${state.quests.side.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
+Small Requests: ${state.quests.small.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
+Unique Events: ${state.quests.unique.map(q=>`${q.title}${q.status==='complete'?' [complete]':''} (${(q.goals||[]).map(g=>`[${g.done?'x':' '}] ${g.text}`).join('; ')})`).join(' | ') || '(none yet)'}
 
 STASHED ITEMS (left behind somewhere specific, not currently carried — use inventory_updates.retrieve if the player goes back for one):
 ${state.stashes.map(s=>`${s.name} — left at: ${s.location}`).join(' | ') || '(none)'}
@@ -1565,12 +1594,13 @@ const DM_TOOL_SCHEMA = {
         currency:{type:["string","null"]}
       }, required:["new_locations","new_settlements","new_factions","new_npcs","new_map_notes","new_artifacts","currency"] },
       quest_updates:{ type:"object", properties:{
-        new_main:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
-        new_side:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
-        new_small:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
-        new_unique:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
+        new_main:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_side:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_small:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        new_unique:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"}, goals:{type:"array",items:{type:"string"}}, reward:{type:"string"} }, required:["title","desc","goals","reward"] }},
+        goal_done:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, goal:{type:"string"} }, required:["title","goal"] }},
         complete:{type:"array",items:{type:"string"}}
-      }, required:["new_main","new_side","new_small","new_unique","complete"] },
+      }, required:["new_main","new_side","new_small","new_unique","goal_done","complete"] },
       party_updates:{ type:"object", properties:{
         bex_note:{type:["string","null"]},
         thrum_note:{type:["string","null"]},
@@ -2076,32 +2106,13 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     }
   }
 
-  function questCap(category){ return category==='side' ? 5 : category==='small' ? 10 : Infinity; }
-  function addQuestOrOverflow(qs, category, entry){
-    const list = qs[category];
-    if(list.some(e=>e.title===entry.title)) return null;
-    const activeCount = list.filter(e=>e.status!=='complete').length;
-    if(activeCount < questCap(category)){
-      list.push({ title:entry.title, desc:entry.desc, status:'active', pinned:false, order:qs.nextOrder++ });
-      return 'added';
-    }
-    if(state.pendingQuestOverflow) return null; // only surface one overflow prompt per turn
-    const candidates = list.filter(e=>e.status!=='complete' && !e.pinned).sort((a,b)=>a.order-b.order);
-    state.pendingQuestOverflow = {
-      category,
-      newQuest: { title:entry.title, desc:entry.desc },
-      evictCandidate: candidates.length ? { title:candidates[0].title } : null
-    };
-    return 'deferred';
-  }
-
   let questChanged = false;
   let questTag = null; // which category got new quest activity this turn, for the chat marker
   if(d.quest_updates){
     const qs = state.quests;
     (d.quest_updates.new_main||[]).forEach(x=>{
       if(!qs.main.some(e=>e.title===x.title)){
-        qs.main.push({ title:x.title, desc:x.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+        qs.main.push(makeQuestEntry(qs, x));
         questChanged = true; questTag = 'main';
       }
     });
@@ -2113,9 +2124,18 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     });
     (d.quest_updates.new_unique||[]).forEach(x=>{
       if(!qs.unique.some(e=>e.title===x.title)){
-        qs.unique.push({ title:x.title, desc:x.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+        qs.unique.push(makeQuestEntry(qs, x));
         questChanged = true; questTag = questTag || 'unique';
       }
+    });
+    (d.quest_updates.goal_done||[]).forEach(g=>{
+      [qs.main, qs.side, qs.small, qs.unique].forEach(list=>{
+        const quest = list.find(e=>e.title===g.title);
+        if(quest){
+          const goal = (quest.goals||[]).find(x=>x.text===g.goal);
+          if(goal && !goal.done){ goal.done = true; questChanged = true; }
+        }
+      });
     });
     (d.quest_updates.complete||[]).forEach(title=>{
       [qs.main, qs.side, qs.small, qs.unique].forEach(list=>{
@@ -2378,6 +2398,12 @@ async function handleImportFiles(event){
   render();
 }
 
+function formatQuestLine(q){
+  const pin = q.pinned ? ' 📌' : '';
+  const goalsBlock = (q.goals && q.goals.length) ? q.goals.map(g=>`  - [${g.done?'x':' '}] ${g.text}`).join('\n') : '';
+  const rewardLine = q.reward ? `\n  - **Reward:** ${q.reward}` : '';
+  return `- **${q.title}**${pin} — ${q.desc}${goalsBlock ? '\n'+goalsBlock : ''}${rewardLine}`;
+}
 function buildFileContent(kind){
   const c = state.character;
   const wb = state.worldBible;
@@ -2446,9 +2472,10 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - **Side Quests** — max 5 active. Quick-to-medium arcs giving real backstory/texture (an NPC's life, a local trouble). Rewards: simple items, reasonable coin, occasionally something rare.
 - **Small Requests** — max 10 active. Lightweight discrete facts/favors/leads (a favor asked in passing, a rumor, a code, a deadline) — exist so small details survive many turns without being forgotten.
 - **Unique Events** — no cap, but rare by design. Simpler in scope than a Main Quest but genuinely harder to pull off. Big payoff: epic loot, meaningful coin, and something that eases the main story.
+- **Every quest has real structure**: 2-4 concrete goals (checkable steps, ticked off as they're actually accomplished, not vague vibes) and a stated reward. Reward size scales to the quest's tier *and* to the personality/means of whoever's offering it — a wealthy patron and a struggling fisherman don't give the same thing for similar effort.
 - **Pinning** — up to 2 Side Quests and 2 Small Requests can be pinned to exempt them from eviction (Main/Unique never need pinning, they're never evicted).
 - **When Side/Small hits its cap**, a new one doesn't silently bump an old one — you get an Accept/Reject prompt showing exactly which (oldest, unpinned) quest would be dropped. Accepting evicts it with a "you've forgotten about..." note; rejecting just declines the new one.
-- Actual current quests live in session_log.md → Active Quests, not here — this section is just the rules of how the system works.
+- Actual current quests (with their goals/reward) live in session_log.md → Active Quests, not here — this section is just the rules of how the system works.
 `;
   }
   if(kind === 'party'){
@@ -2489,13 +2516,13 @@ ${state.sessionMeta.openThreads.map(s=>'- '+s).join('\n') || '- (none yet)'}
 
 ## Active Quests
 ### Main Quest
-${state.quests.main.filter(q=>q.status!=='complete').map(q=>`- **${q.title}** — ${q.desc}`).join('\n') || '- (none yet)'}
+${state.quests.main.filter(q=>q.status!=='complete').map(q=>formatQuestLine(q)).join('\n\n') || '- (none yet)'}
 ### Side Quests (${state.quests.side.filter(q=>q.status!=='complete').length}/5)
-${state.quests.side.filter(q=>q.status!=='complete').map(q=>`- **${q.title}**${q.pinned?' 📌':''} — ${q.desc}`).join('\n') || '- (none yet)'}
+${state.quests.side.filter(q=>q.status!=='complete').map(q=>formatQuestLine(q)).join('\n\n') || '- (none yet)'}
 ### Small Requests (${state.quests.small.filter(q=>q.status!=='complete').length}/10)
-${state.quests.small.filter(q=>q.status!=='complete').map(q=>`- **${q.title}**${q.pinned?' 📌':''} — ${q.desc}`).join('\n') || '- (none yet)'}
+${state.quests.small.filter(q=>q.status!=='complete').map(q=>formatQuestLine(q)).join('\n\n') || '- (none yet)'}
 ### Unique Events
-${state.quests.unique.filter(q=>q.status!=='complete').map(q=>`- **${q.title}** — ${q.desc}`).join('\n') || '- (none yet)'}
+${state.quests.unique.filter(q=>q.status!=='complete').map(q=>formatQuestLine(q)).join('\n\n') || '- (none yet)'}
 ### Completed
 ${[...state.quests.main,...state.quests.side,...state.quests.small,...state.quests.unique].filter(q=>q.status==='complete').map(q=>'- '+q.title).join('\n') || '- (none yet)'}
 
