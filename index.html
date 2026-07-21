@@ -261,7 +261,7 @@ function createDefaultState(){
     character: {
       name:'Raken', species:'Coralkin', klass:'Tech Mage Schemer',
       hp:'Healthy', hpCurrent:20, hpMax:20, magicCharge:'stone',
-      quest:'The Hum Job — Port Halloway hull, Anchor-7',
+      quest:'The Hum Job',
       inventory:['Relic-scanning kit','Rusted key (in pedestal)','Dormant egg-object (unpaired)'],
       // Real equipment slots — one item each for head/body/feet/accessory1/accessory2 (equipping
       // something new auto-swaps the old one back to inventory, doesn't just add on top). Hands
@@ -566,10 +566,24 @@ async function loadSaveFilesFromDisk(){
     if(parsed.partyBexStatus) state.party.bexStatus = parsed.partyBexStatus;
     if(parsed.partyThrumStatus) state.party.thrumStatus = parsed.partyThrumStatus;
     delete parsed.partyBexStatus; delete parsed.partyThrumStatus;
+    const parsedQuests = parsed.quests; delete parsed.quests;
+    const parsedStashes = parsed.stashes; delete parsed.stashes;
     Object.assign(state.sessionMeta, parsed);
+    applyParsedQuests(parsedQuests);
+    if(parsedStashes) state.stashes = parsedStashes;
     found = true;
   }
   return found;
+}
+function applyParsedQuests(parsedQuests){
+  if(!parsedQuests) return;
+  const qs = state.quests;
+  ['main','side','small','unique'].forEach(cat=>{
+    qs[cat] = (parsedQuests[cat]||[]).map(q=>({
+      title: q.title, desc: q.desc, goals: q.goals, reward: q.reward,
+      status: q.status, pinned: q.pinned, order: qs.nextOrder++
+    }));
+  });
 }
 // Fallback: this device/browser's own storage from a previous session here.
 async function loadSaveFilesFromStorage(){
@@ -2076,7 +2090,7 @@ Mark a quest complete via quest_updates.complete (list its exact title) the turn
 Every quest at every tier (new_main/new_side/new_small/new_unique) needs real "goals" (2-3 short, concrete, checkable steps, max 3 — not vague vibes, things you can tell whether the player has actually done) and a real "reward". As individual goals get accomplished in play, mark them via quest_updates.goal_done (exact quest title + exact goal text) — don't wait until the very end to update anything, tick them off as they genuinely happen. For Main Quest specifically: once all 3 goals are done, that quest should complete and be replaced by the next one in the throughline — don't let it linger fully-checked without concluding.
 Reward rules: never leave reward empty — if you genuinely don't know what it'll be yet, use exactly "??" (optionally with a short note after, e.g. "?? — Corr hasn't said what he'll offer"). If the reward is notably advantageous — something that gives a real edge outside or inside combat, not just a generic prize (a rare tool, a useful weapon, information that unlocks something, anything tied to a Unique Event's big payoff) — prefix it with "!!" (e.g. "!! An old-tech multitool that reveals hidden mechanisms"). Otherwise just describe it plainly. Common rewards are simple items or coin; a quest can list multiple rewards together in one string when that's warranted by its difficulty (e.g. "40 coils and a masterwork dagger"). Reward size/nature should scale to the quest's actual complexity/tier and fit the personality and means of whoever's offering it — a wealthy patron offers differently than a struggling fisherman, a generous NPC differently than a stingy one.
 Main vs. Side: if something is connected to or supports the main story but isn't the singular main throughline itself — a related sub-plot, a task that feeds into it without being it — that's a Side Quest, not an additional Main Quest entry. Keep Main strictly to the 1-2 quests that ARE the throughline.
-Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
+Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). Keep quest.current short — just the quest's name (e.g. "The Hum Job"), not the full hook — it's shown compactly in the HUD at all times, so a long string there crowds the screen. The actual detail belongs in the Main Quest's own desc field (via quest_updates.new_main) once it exists as a real quest, not crammed into this field. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
 Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Every negative coins_delta (a spend) is now held by the app for the player's explicit approval before it's ever actually deducted — you don't need to worry about accidentally overcharging, the mechanism itself prevents that. Still narrate purchases naturally when the player has clearly chosen to buy something (don't withhold narration waiting for a separate confirmation step — the app handles the actual approval on its own), and always fill character_status.spend_reason with a short description of what the coins are for (e.g. "food and rope from the market") so the approval prompt is clear about what's being paid for.
 XP (character_status.xp_delta): award for real accomplishments — completing a quest goal, resolving a genuine risk or encounter, a meaningful discovery — not for routine narration or small talk. This uses the real D&D XP scale (300 total XP reaches level 2, 900 reaches level 3, and it climbs fast from there), so awards need to be sized accordingly, not small: a minor beat 25-50 XP, a solid accomplishment 75-150, completing a Side Quest/Small Request 150-300, completing a Main Quest or Unique Event 400-800. The app handles leveling itself (HP growth via hit die + Constitution, ability score improvements at the standard levels, full heal) automatically once enough is earned — you don't need to track levels or thresholds, just award XP when it's actually earned.
@@ -2886,6 +2900,18 @@ function downloadMarkdown(filename, content){
 const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md' };
 
 // ---- Import: reverse of buildFileContent(), for loading real files back in ----
+function splitTopLevelCommas(str){
+  const parts = [];
+  let depth = 0, current = '';
+  for(const ch of str){
+    if(ch === '(') depth++;
+    if(ch === ')') depth--;
+    if(ch === ',' && depth <= 0){ parts.push(current.trim()); current = ''; }
+    else current += ch;
+  }
+  if(current.trim()) parts.push(current.trim());
+  return parts;
+}
 function extractSection(text, header){
   // Global + take the LAST match: real session logs can have multiple concatenated
   // entries (session continued → session concluded) appended over time. Always want
@@ -2952,8 +2978,8 @@ function parseCharacterSheetMd(text){
   if(grounding && groundingMap[grounding]) out.magicCharge = groundingMap[grounding];
   if(coinsLine){ const n = parseInt(coinsLine, 10); if(!isNaN(n)) out.coins = n; }
   if(reserveLine){ const m = reserveLine.match(/(\d+)\s*\/\s*(\d+)/); if(m){ out.magicReserve = parseInt(m[1],10); out.magicReserveMax = parseInt(m[2],10); } }
-  if(quest) out.quest = quest;
-  if(invLine) out.inventory = invLine.split(',').map(s=>s.trim()).filter(Boolean);
+  if(quest) out.quest = quest.replace(/\s*\*\(.*?\)\*\s*$/, '').trim();
+  if(invLine) out.inventory = splitTopLevelCommas(invLine).filter(Boolean);
   const headLine = extractField(text, 'Head');
   const bodyLine = extractField(text, 'Body');
   const feetLine = extractField(text, 'Feet');
@@ -2993,10 +3019,21 @@ function parseCharacterSheetMd(text){
     });
     if(Object.keys(profs).length) out.skillProficiencies = profs; // merged onto default skills by name via applyCharacterSheetParse
   }
+  const itemDescSection = extractSection(text, 'Item Descriptions');
+  if(itemDescSection && !/^\(none recorded yet\)$/i.test(itemDescSection.trim())){
+    const itemInfo = {};
+    extractListItems(itemDescSection).forEach(line=>{
+      const m = line.match(/\*\*(.+?):\*\*\s*(.*)/);
+      if(m) itemInfo[m[1].trim()] = m[2].trim();
+    });
+    if(Object.keys(itemInfo).length) out.itemInfo = itemInfo;
+  }
   return out;
 }
 function parseWorldBibleMd(text){
   const currency = extractSection(text, 'Currency');
+  const setting = extractSection(text, 'The Setting');
+  const rulesSection = extractSection(text, 'Rules of This World');
   const settlementsRaw = extractListItems(extractSection(text, 'Settlements'));
   const settlements = settlementsRaw.map(line=>{
     const m = line.match(/^\*\*(.+?)\*\*\s*\((.+?)\)\s*—\s*(.*)$/);
@@ -3011,6 +3048,22 @@ function parseWorldBibleMd(text){
   };
   if(settlements.length) out.settlements = settlements;
   if(currency && !/^\(not established/i.test(currency)) out.currency = currency;
+  if(setting) out.setting = setting;
+  if(rulesSection){
+    // Top-level bullets are freeform rules; "### How X Works" subsections are structured
+    // mechanics — flatten each into a single rule string so nothing gets silently dropped
+    // on reload (this previously included Combat/Stats/Leveling/Attacks/Defenses/Death
+    // Saves/Conditions/Resting/Equipment/Quests — all real content, none of it was parsed).
+    const topLevelRules = rulesSection.split('\n### ')[0];
+    const rules = extractListItems(topLevelRules);
+    const subsectionMatches = [...rulesSection.matchAll(/###\s*(.+?)\n([\s\S]*?)(?=\n###\s|$)/g)];
+    subsectionMatches.forEach(m=>{
+      const heading = m[1].trim();
+      const bullets = extractListItems(m[2]);
+      bullets.forEach(b => rules.push(`[${heading}] ${b}`));
+    });
+    if(rules.length) out.rules = rules;
+  }
   return out;
 }
 function parsePartyMd(text){
@@ -3020,6 +3073,63 @@ function parsePartyMd(text){
   if(bex) out.bex = bex;
   if(thrum) out.thrum = thrum;
   return out;
+}
+function extractSubSection(text, header){
+  const re = new RegExp(`###\\s*${header}.*\\n([\\s\\S]*?)(?=\\n###\\s|$)`, 'i');
+  const m = text.match(re);
+  return m ? m[1].trim() : '';
+}
+function parseQuestTierBlock(sectionText){
+  if(!sectionText || /^-?\s*\(none yet\)$/i.test(sectionText.trim())) return [];
+  const lines = sectionText.split('\n');
+  const quests = [];
+  let current = null;
+  lines.forEach(line=>{
+    const topMatch = line.match(/^-\s*\*\*(.+?)\*\*(\s*📌)?\s*—\s*(.*)$/);
+    if(topMatch){
+      if(current) quests.push(current);
+      current = { title: topMatch[1].trim(), pinned: !!topMatch[2], desc: topMatch[3].trim(), goals: [], reward: '' };
+      return;
+    }
+    const goalMatch = line.match(/^\s+-\s*\[([ xX])\]\s*(.+)$/);
+    if(goalMatch && current){
+      current.goals.push({ text: goalMatch[2].trim(), done: goalMatch[1].toLowerCase()==='x' });
+      return;
+    }
+    const rewardMatch = line.match(/^\s+-\s*\*\*Reward:?\*\*\s*(.*)$/i);
+    if(rewardMatch && current){
+      current.reward = rewardMatch[1].trim();
+      return;
+    }
+  });
+  if(current) quests.push(current);
+  return quests;
+}
+function parseActiveQuests(text){
+  const questsSection = extractSection(text, 'Active Quests');
+  if(!questsSection) return null;
+  const completedTitles = extractListItems(extractSubSection(questsSection, 'Completed'));
+  const build = (tierText, category) => parseQuestTierBlock(tierText).map(q => ({
+    title: q.title, desc: q.desc,
+    goals: q.goals.length ? q.goals : [],
+    reward: q.reward || '??',
+    status: completedTitles.some(t=>t.includes(q.title)) ? 'complete' : 'active',
+    pinned: q.pinned, order: 0, category
+  }));
+  return {
+    main: build(extractSubSection(questsSection, 'Main Quest'), 'main'),
+    side: build(extractSubSection(questsSection, 'Side Quests[^\\n]*'), 'side'),
+    small: build(extractSubSection(questsSection, 'Small Requests[^\\n]*'), 'small'),
+    unique: build(extractSubSection(questsSection, 'Unique Events'), 'unique'),
+  };
+}
+function parseStashedItems(text){
+  const section = extractSection(text, 'Stashed Items');
+  if(!section) return [];
+  return extractListItems(section).map(line=>{
+    const m = line.match(/\*\*(.+?)\*\*\s*—\s*left at:\s*(.*)/i);
+    return m ? { name:m[1].trim(), desc:'', location:m[2].trim() } : null;
+  }).filter(Boolean);
 }
 function parseSessionLogMd(text){
   const sessionMatches = [...text.matchAll(/\*\*Session:?\*\*\s*(\d+)/gi)];
@@ -3039,6 +3149,10 @@ function parseSessionLogMd(text){
   if(sessionMatch) out.sessionNumber = parseInt(sessionMatch[1], 10);
   if(bexStatus) out.partyBexStatus = bexStatus[1].trim();
   if(thrumStatus) out.partyThrumStatus = thrumStatus[1].trim();
+  const quests = parseActiveQuests(text);
+  if(quests) out.quests = quests;
+  const stashes = parseStashedItems(text);
+  if(stashes.length) out.stashes = stashes;
   return out;
 }
 function detectFileKind(filename){
@@ -3065,7 +3179,11 @@ async function handleImportFiles(event){
       if(parsed.partyBexStatus) state.party.bexStatus = parsed.partyBexStatus;
       if(parsed.partyThrumStatus) state.party.thrumStatus = parsed.partyThrumStatus;
       delete parsed.partyBexStatus; delete parsed.partyThrumStatus;
+      const parsedQuests = parsed.quests; delete parsed.quests;
+      const parsedStashes = parsed.stashes; delete parsed.stashes;
       Object.assign(state.sessionMeta, parsed);
+      applyParsedQuests(parsedQuests);
+      if(parsedStashes) state.stashes = parsedStashes;
     }
     loaded.push(FILE_NAMES[kind]);
   }
@@ -3115,6 +3233,9 @@ function buildFileContent(kind){
 - **Accessory 2:** ${c.equipment.accessory2 || '(empty)'}
 - **Hands (${handsUsed()}/${handCapacity()}):** ${c.hands.length ? c.hands.map(h=>`${h.name} (${h.handsUsed}h)`).join(', ') : '(both free)'}
 *Head/Body/Feet/Accessory are single-item slots — equipping something new swaps out the old one. Hands are capacity-based: a one-handed item costs 1, two-handed costs both.*
+
+## Item Descriptions
+${Object.keys(c.itemInfo||{}).filter(name=>c.itemInfo[name]).map(name=>`- **${name}:** ${c.itemInfo[name]}`).join('\n') || '- (none recorded yet)'}
 
 ## Level & Experience
 - **Level:** ${c.level}
