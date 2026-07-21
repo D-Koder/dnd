@@ -67,8 +67,7 @@
   .status-strip .stats{ display:flex; gap:12px; flex-wrap:wrap; color:var(--cream-dim); letter-spacing:0.5px; }
   .status-strip .stats b{ color:var(--brass); font-weight:normal; }
   .status-strip .quest-row{ font-size:10px; color:var(--cream-dim); padding-left:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .player-hp-bar{ height:4px; background:var(--bg); border:1px solid var(--line); border-radius:2px; overflow:hidden; margin:2px 0 2px 32px; }
-  .player-hp-fill{ height:100%; background:var(--teal); transition:width .3s, background .3s; }
+  .quest-badge{ font-family:var(--mono); font-size:10px; letter-spacing:1.5px; color:var(--brass); background:rgba(201,112,74,0.12); border:1px solid var(--brass-dim); display:inline-block; padding:3px 8px; border-radius:2px; margin:8px 0 6px; }
   .status-strip .quest-row b{ color:var(--brass); font-weight:normal; }
 
   /* ---- chat feed: console log, not messenger bubbles ---- */
@@ -267,6 +266,10 @@ function createDefaultState(){
     oocMode: false,
     tab: 'chat',
     bestiary: { type:'humanoid', results:[], status:'' },
+    library: { section:'bestiary' }, // 'bestiary' | 'spells' — which sub-view Library tab shows
+    quests: { main:[], side:[], small:[], unique:[], nextOrder:1 }, // each entry: {title, desc, status:'active'|'complete', pinned:false, order:N}
+    pendingQuestOverflow: null, // { category:'side'|'small', newQuest:{title,desc}, evictCandidate:{...} } — composer shows a confirm/reject prompt
+    stashes: [], // items intentionally left somewhere: {name, desc, location} — sent in full every turn so nothing gets forgotten
     spells: { level:0, results:[], status:'' },
     worldBible: {
       setting: 'Veyrune — old magic and crashed spaceship tech mashed together a few centuries ago.',
@@ -370,6 +373,8 @@ async function resetCampaign(){
     storageDelete('veyrune:party'),
     storageDelete('veyrune:session_log'),
     storageDelete('veyrune:chat_transcript'),
+    storageDelete('veyrune:quests'),
+    storageDelete('veyrune:stashes'),
   ]);
   Object.assign(state, createDefaultState());
   state.booting = false;
@@ -419,17 +424,21 @@ async function loadSaveFilesFromDisk(){
 }
 // Fallback: this device/browser's own storage from a previous session here.
 async function loadSaveFilesFromStorage(){
-  const [char, wb, party, meta] = await Promise.all([
+  const [char, wb, party, meta, quests, stashes] = await Promise.all([
     storageGet('veyrune:character_sheet'),
     storageGet('veyrune:world_bible'),
     storageGet('veyrune:party'),
     storageGet('veyrune:session_log'),
+    storageGet('veyrune:quests'),
+    storageGet('veyrune:stashes'),
   ]);
   let found = false;
   if(char){ Object.assign(state.character, JSON.parse(char)); found = true; }
   if(wb){ Object.assign(state.worldBible, JSON.parse(wb)); found = true; }
   if(party){ Object.assign(state.party, JSON.parse(party)); found = true; }
   if(meta){ Object.assign(state.sessionMeta, JSON.parse(meta)); found = true; }
+  if(quests){ Object.assign(state.quests, JSON.parse(quests)); found = true; }
+  if(stashes){ state.stashes = JSON.parse(stashes); found = true; }
   return found;
 }
 async function loadSettingsOnly(){
@@ -496,12 +505,19 @@ async function bootSaveFiles(){
     if(restoredOptions) state.lastOptions = restoredOptions;
     if(restoredCombat) state.combat = restoredCombat;
     if(restoredItemClaim) state.pendingItemClaim = restoredItemClaim;
-    if(restoredRoll){
-      state.pendingRoll = restoredRoll;
-      state.modal = { kind:'dice', requirement:restoredRoll, chosenDie:restoredRoll.die, result:null };
-    }
+    if(restoredRoll) state.pendingRoll = restoredRoll; // composer shows a Roll button — doesn't auto-open the modal
+
+    // If the very last thing in the transcript is the player's own message with nothing
+    // after it, the DM never actually answered — most likely a refresh happened mid-call.
+    // Resend it now so it doesn't just sit there forever unanswered.
+    const lastMsg = state.chat[state.chat.length - 1];
+    const needsResponse = lastMsg && (lastMsg.type === 'player' || lastMsg.type === 'player-ooc');
+
     state.chat.push({ type:'note', text:'💾 Restored previous conversation.' });
     render();
+    if(needsResponse){
+      await sendAction(lastMsg.text, { isOOC: lastMsg.type === 'player-ooc', skipPlayerBubble:true });
+    }
     return;
   }
 
@@ -532,6 +548,8 @@ async function persistSaveFiles(){
     storageSet('veyrune:world_bible', JSON.stringify(state.worldBible)),
     storageSet('veyrune:party', JSON.stringify(state.party)),
     storageSet('veyrune:session_log', JSON.stringify(state.sessionMeta)),
+    storageSet('veyrune:quests', JSON.stringify(state.quests)),
+    storageSet('veyrune:stashes', JSON.stringify(state.stashes)),
   ]);
 }
 async function persistSettings(){
@@ -576,7 +594,6 @@ function render(){
           <span>✨ <b>${state.character.magicReserve}/${state.character.magicReserveMax}</b></span>
         </div>
       </div>
-      <div class="player-hp-bar"><div class="player-hp-fill" style="width:${Math.max(0,(state.character.hpCurrent/state.character.hpMax)*100)}%; background:${state.character.hp==='Healthy'?'var(--teal)':state.character.hp==='Bruised'?'var(--teal)':state.character.hp==='Hurt'?'var(--brass)':'var(--danger)'};"></div></div>
       <div class="quest-row">🎯 <b>${escHtml(state.character.quest)}</b></div>
     </div>
     ${isChat ? `
@@ -591,6 +608,14 @@ function render(){
           <button class="claim-item-btn" onclick="openPendingItemClaim()">
             ${state.pendingItemClaim.kind==='item' ? '🎁 Claim Item: '+escHtml(state.pendingItemClaim.item.name) : '🎒 Claim '+state.pendingItemClaim.items.length+' Item'+(state.pendingItemClaim.items.length>1?'s':'')}
           </button>
+        ` : state.pendingRoll ? `
+          <button class="claim-item-btn" onclick="openDiceModal(state.pendingRoll)">
+            🎲 Roll Required: ${escHtml(state.pendingRoll.reason || 'Roll now')}
+          </button>
+        ` : state.pendingQuestOverflow ? `
+          <button class="claim-item-btn" onclick="openQuestOverflowModal()">
+            ❓ ${state.pendingQuestOverflow.category==='side'?'Side Quest':'Request'} Offered: ${escHtml(state.pendingQuestOverflow.newQuest.title)}
+          </button>
         ` : `
           <button class="icon-btn" title="Roll dice" onclick="openDiceModal(null)" ${state.booting?'disabled':''}>⚄</button>
           <button class="icon-btn ooc-toggle ${state.oocMode?'active':''}" title="Toggle OOC — ask the DM a meta question" onclick="toggleOOCMode()" ${state.booting?'disabled':''}>OOC</button>
@@ -601,8 +626,8 @@ function render(){
     ` : `<div class="tab-panel">${renderTabPanel()}</div>`}
     <div class="tab-bar">
       <button class="${state.tab==='chat'?'active':''}" onclick="setTab('chat')">Chat</button>
-      <button class="${state.tab==='bestiary'?'active':''}" onclick="setTab('bestiary')">Bestiary</button>
-      <button class="${state.tab==='spells'?'active':''}" onclick="setTab('spells')">Spells</button>
+      <button class="${state.tab==='library'?'active':''}" onclick="setTab('library')">Library</button>
+      <button class="${state.tab==='quest'?'active':''}" onclick="setTab('quest')">Quest</button>
       <button class="${state.tab==='inventory'?'active':''}" onclick="setTab('inventory')">Inventory</button>
       <button class="${state.tab==='status'?'active':''}" onclick="setTab('status')">Status</button>
     </div>
@@ -613,8 +638,8 @@ function render(){
 }
 function setTab(t){ state.tab = t; render(); }
 function renderTabPanel(){
-  if(state.tab==='bestiary') return renderBestiaryTab();
-  if(state.tab==='spells') return renderSpellsTab();
+  if(state.tab==='library') return renderLibraryTab();
+  if(state.tab==='quest') return renderQuestTab();
   if(state.tab==='inventory') return renderInventoryTab();
   if(state.tab==='status') return renderStatusTab();
   return '';
@@ -623,11 +648,13 @@ function renderTabPanel(){
 function renderChatItem(m, i){
   if(m.type==='dm'){
     const providerTag = m.provider ? `<span class="provider-tag">· ${m.provider}</span>` : '';
+    const questBadges = { main:'🗺️ MAIN QUEST', side:'📜 SIDE QUEST', small:'🔹 SMALL REQUEST', unique:'⭐ UNIQUE EVENT', complete:'✅ QUEST COMPLETE' };
+    const questBadge = m.questTag ? `<div class="quest-badge">${questBadges[m.questTag]}</div>` : '';
     if(m.isOOC){
       return `<div class="msg-dm-ooc"><span class="speaker-tag">[DM · OOC]</span>${providerTag}${escHtml(m.text)}</div>`;
     }
     const divider = i>0 ? `<div class="turn-divider">${glyph()}<div class="line"></div></div>` : '';
-    return `${divider}<div class="msg-dm${m.streaming?' streaming-text':''}"><span class="speaker-tag">[DM]</span>${providerTag}${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
+    return `${divider}${questBadge}<div class="msg-dm${m.streaming?' streaming-text':''}"><span class="speaker-tag">[DM]</span>${providerTag}${escHtml(m.text)}</div>${(m.companions||[]).map(c=>`<div class="msg-companion"><b>[${escHtml(c.name.toUpperCase())}]</b> ${escHtml(c.line)}</div>`).join('')}`;
   }
   if(m.type==='player') return `<div class="msg-player msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU]</span>${escHtml(m.text)}</div>`;
   if(m.type==='player-ooc') return `<div class="msg-player-ooc msg-longpress" ${longPressAttrs(i)}><span class="speaker-tag">[YOU · OOC]</span>${escHtml(m.text)}</div>`;
@@ -702,6 +729,16 @@ function confirmOverride(idx){
   state.chat.splice(idx, 1);
   sendAction(item.originalAction, { overrideInvalid:true });
 }
+function isLastPlayerMessage(idx){
+  // Edit is only offered for the most recent thing you actually sent — editing anything
+  // further back would undo/redo a much larger chunk of the conversation than intended.
+  const item = state.chat[idx];
+  if(!item || (item.type!=='player' && item.type!=='player-ooc')) return false;
+  for(let i=idx+1; i<state.chat.length; i++){
+    if(state.chat[i].type==='player' || state.chat[i].type==='player-ooc') return false;
+  }
+  return true;
+}
 function openMessageMenu(idx){
   const item = state.chat[idx];
   if(!item || (item.type!=='player' && item.type!=='player-ooc' && item.type!=='roll')) return;
@@ -723,13 +760,15 @@ function renderMessageMenuModal(m){
       </div>
     </div>`;
   }
+  const canEdit = isLastPlayerMessage(m.idx);
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="sheet">
       <h3>${item.type==='roll' ? 'Dice Roll' : 'Your Message'}</h3>
       <div class="flavor">"${escHtml(item.text)}"</div>
+      ${!canEdit && item.type!=='roll' ? `<div class="flavor" style="font-size:12px; opacity:0.7;">Editing is only available for the most recent message you sent — this one's further back, so only Delete is offered here.</div>` : ''}
       <div class="sheet-actions">
         <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn-primary" onclick="startMessageEdit()">Edit</button>
+        ${canEdit ? `<button class="btn-primary" onclick="startMessageEdit()">Edit</button>` : ''}
         <button class="btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="deleteMessage()">Delete</button>
       </div>
     </div>
@@ -737,11 +776,42 @@ function renderMessageMenuModal(m){
 }
 function startMessageEdit(){ state.modal.editing = true; render(); }
 function saveMessageEdit(){
-  const val = document.getElementById('msg-edit-textarea').value;
-  const item = state.chat[state.modal.idx];
-  if(item) item.text = val;
-  state.modal = null;
-  render();
+  const newText = document.getElementById('msg-edit-textarea').value;
+  const idx = state.modal.idx;
+  const item = state.chat[idx];
+  if(!item){ state.modal = null; render(); return; }
+  if(item.preTurnSnapshot && !isLastPlayerMessage(idx)){
+    // Shouldn't be reachable through the UI (the Edit button is hidden for this case),
+    // but refuse it here too rather than trusting the caller.
+    state.modal = null; render(); return;
+  }
+
+  if(item.preTurnSnapshot){
+    // Undo whatever this message caused — coins, HP, quests, inventory, everything —
+    // by restoring the exact state from right before it was originally sent, then drop
+    // the old message and everything that came after it (the old response is now stale),
+    // and resend the corrected text as a fresh action.
+    const snap = item.preTurnSnapshot;
+    state.character = JSON.parse(JSON.stringify(snap.character));
+    state.worldBible = JSON.parse(JSON.stringify(snap.worldBible));
+    state.party = JSON.parse(JSON.stringify(snap.party));
+    state.sessionMeta = JSON.parse(JSON.stringify(snap.sessionMeta));
+    state.combat = JSON.parse(JSON.stringify(snap.combat));
+    state.quests = JSON.parse(JSON.stringify(snap.quests));
+    state.chat = state.chat.slice(0, idx);
+    state.pendingItemClaim = null;
+    state.pendingRoll = null;
+    state.lastOptions = [];
+    state.modal = null;
+    persistSaveFiles();
+    sendAction(newText, item.type === 'player-ooc' ? { isOOC:true } : {});
+  } else {
+    // No snapshot (OOC messages never mutate state, or a plain dice-roll display) —
+    // just correct the text in place, nothing to undo.
+    item.text = newText;
+    state.modal = null;
+    render();
+  }
 }
 function deleteMessage(){
   state.chat.splice(state.modal.idx, 1);
@@ -773,6 +843,7 @@ function renderModal(){
   if(m.kind==='debug-log') return renderDebugLogModal();
   if(m.kind==='items-gained') return renderItemsGainedModal(m);
   if(m.kind==='item-info') return renderItemInfoModal(m);
+  if(m.kind==='quest-overflow') return renderQuestOverflowModal();
   return '';
 }
 function renderResetConfirmModal(){
@@ -847,6 +918,64 @@ function confirmRoll(){
   }
 }
 
+function openQuestOverflowModal(){
+  if(!state.pendingQuestOverflow) return;
+  state.modal = { kind:'quest-overflow' };
+  render();
+}
+function renderQuestOverflowModal(){
+  const o = state.pendingQuestOverflow;
+  if(!o) return '';
+  const label = o.category==='side' ? 'Side Quest' : 'Request';
+  return `<div class="overlay">
+    <div class="sheet">
+      <h3>New ${label} Offered</h3>
+      <div style="font-family:var(--mono); color:var(--teal); font-size:14px; margin-bottom:6px;">${escHtml(o.newQuest.title)}</div>
+      <div class="flavor">${escHtml(o.newQuest.desc)}</div>
+      ${o.evictCandidate ? `<div class="flavor" style="font-size:12px;">You're at your ${label.toLowerCase()} limit. Accepting this will drop your oldest unpinned one: <b style="color:var(--brass)">${escHtml(o.evictCandidate.title)}</b>.</div>` : ''}
+      <div class="sheet-actions">
+        <button class="btn-secondary" onclick="resolveQuestOverflow(false)">Reject</button>
+        <button class="btn-primary" onclick="resolveQuestOverflow(true)">Accept</button>
+      </div>
+    </div>
+  </div>`;
+}
+function resolveQuestOverflow(accept){
+  const o = state.pendingQuestOverflow;
+  if(!o) return;
+  const qs = state.quests;
+  const label = o.category==='side' ? 'side quest' : 'request';
+  if(accept){
+    const list = qs[o.category];
+    if(o.evictCandidate){
+      const idx = list.findIndex(e=>e.title===o.evictCandidate.title);
+      if(idx>=0){
+        list.splice(idx,1);
+        state.chat.push({ type:'note', text:`🧠 You've forgotten about the ${label} regarding "${o.evictCandidate.title}".` });
+      }
+    }
+    list.push({ title:o.newQuest.title, desc:o.newQuest.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+    state.chat.push({ type:'note', text:`📜 New ${label} accepted: "${o.newQuest.title}"` });
+  } else {
+    state.chat.push({ type:'note', text:`Declined new ${label}: "${o.newQuest.title}"` });
+  }
+  state.pendingQuestOverflow = null;
+  state.modal = null;
+  persistSaveFiles();
+  render();
+}
+function toggleQuestPin(category, title){
+  const list = state.quests[category];
+  const entry = list.find(e=>e.title===title);
+  if(!entry) return;
+  if(!entry.pinned){
+    const pinnedCount = list.filter(e=>e.pinned).length;
+    if(pinnedCount >= 2) return; // cap reached — silently ignore, button just won't visually change
+  }
+  entry.pinned = !entry.pinned;
+  persistSaveFiles();
+  render();
+}
 function openPendingItemClaim(){
   if(!state.pendingItemClaim) return;
   state.modal = state.pendingItemClaim;
@@ -962,10 +1091,51 @@ async function open5e(path){
 }
 const CREATURE_TYPES = ['aberration','beast','celestial','construct','dragon','elemental','fey','fiend','giant','humanoid','monstrosity','ooze','plant','undead'];
 
-function renderBestiaryTab(){
+function renderLibraryTab(){
+  return `
+    <h2>${glyph('tab-icon-inline')} Library</h2>
+    <div class="ref-row" style="margin-bottom:16px;">
+      <button class="pill-btn ${state.library.section==='bestiary'?'':'btn-secondary'}" style="${state.library.section==='bestiary'?'':'background:transparent;'}" onclick="setLibrarySection('bestiary')">Bestiary</button>
+      <button class="pill-btn ${state.library.section==='spells'?'':'btn-secondary'}" style="${state.library.section==='spells'?'':'background:transparent;'}" onclick="setLibrarySection('spells')">Spells</button>
+    </div>
+    ${state.library.section==='bestiary' ? renderBestiaryTab(true) : renderSpellsTab(true)}
+  `;
+}
+function setLibrarySection(s){ state.library.section = s; render(); }
+function renderQuestTab(){
+  const q = state.quests;
+  const caps = { side:5, small:10 };
+  function questGroup(title, category, icon){
+    const list = q[category];
+    const active = list.filter(x=>x.status!=='complete');
+    const done = list.filter(x=>x.status==='complete');
+    const cap = caps[category];
+    return `
+      <div class="subhead" style="margin-top:20px;">${icon} ${title}${cap ? ` (${active.length}/${cap})` : ''}</div>
+      ${active.length ? active.map(x=>`
+        <div class="ref-card">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+            <div class="rc-name">${escHtml(x.title)}</div>
+            ${cap ? `<button class="inv-remove" style="color:${x.pinned?'var(--brass)':'var(--teal)'}; white-space:nowrap;" onclick='toggleQuestPin(${escAttr(JSON.stringify(category))}, ${escAttr(JSON.stringify(x.title))})'>${x.pinned?'📌 pinned':'📌 pin'}</button>` : ''}
+          </div>
+          <div class="rc-meta" style="margin-top:4px;">${escHtml(x.desc)}</div>
+        </div>
+      `).join('') : `<div class="flavor">None active.</div>`}
+      ${done.length ? `<div class="flavor" style="margin-top:8px; font-size:11px;">✅ Completed: ${done.map(x=>escHtml(x.title)).join(', ')}</div>` : ''}
+    `;
+  }
+  return `
+    <h2>${glyph('tab-icon-inline')} Quest Log</h2>
+    ${questGroup('Main Quest', 'main', '🗺️')}
+    ${questGroup('Side Quests', 'side', '📜')}
+    ${questGroup('Small Requests', 'small', '🔹')}
+    ${questGroup('Unique Events', 'unique', '⭐')}
+  `;
+}
+function renderBestiaryTab(nested){
   const b = state.bestiary;
   return `
-    <h2>${glyph('tab-icon-inline')} Bestiary</h2>
+    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Bestiary</h2>`}
     <div class="ref-row">
       <div class="field-mini"><select id="bestiary-type" onchange="state.bestiary.type=this.value">${CREATURE_TYPES.map(t=>`<option ${b.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
       <button class="pill-btn" onclick="fetchBestiary()">Look Up</button>
@@ -1000,10 +1170,10 @@ async function fetchBestiary(){
   render();
 }
 
-function renderSpellsTab(){
+function renderSpellsTab(nested){
   const s = state.spells;
   return `
-    <h2>${glyph('tab-icon-inline')} Spell Archive</h2>
+    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Spell Archive</h2>`}
     <div class="ref-row">
       <div class="field-mini"><select id="spell-level" onchange="state.spells.level=parseInt(this.value,10)">${[0,1,2,3,4,5,6,7,8,9].map(l=>`<option value="${l}" ${s.level===l?'selected':''}>${l===0?'Cantrip':'Level '+l}</option>`).join('')}</select></div>
       <button class="pill-btn" onclick="fetchSpellsTab()">Browse</button>
@@ -1088,6 +1258,10 @@ function renderInventoryTab(){
     <ul class="inv-list">
       ${c.inventory.map(item=>`<li style="display:flex; justify-content:space-between; align-items:center;"><span>${escHtml(item)}</span><button class="inv-remove" style="color:var(--teal);" onclick='openItemInfo(${escAttr(JSON.stringify(item))})'>info</button></li>`).join('') || '<li class="flavor" style="border:none;">Empty.</li>'}
     </ul>
+    <div class="subhead">Stashed Elsewhere</div>
+    <ul class="inv-list">
+      ${state.stashes.length ? state.stashes.map(s=>`<li><div>${escHtml(s.name)}</div><div class="flavor" style="font-size:11px; margin-top:2px;">Left at: ${escHtml(s.location)}</div></li>`).join('') : '<li class="flavor" style="border:none;">Nothing stashed.</li>'}
+    </ul>
   `;
 }
 function openItemInfo(name){
@@ -1121,7 +1295,6 @@ function renderStatusTab(){
         <input type="number" min="1" style="width:70px;" value="${c.hpMax}" onchange="state.character.hpMax=Math.max(1,parseInt(this.value,10)||1); state.character.hpCurrent=Math.min(state.character.hpCurrent,state.character.hpMax); state.character.hp=hpLabel(state.character.hpCurrent,state.character.hpMax); render();">
         <span style="font-family:var(--mono); color:var(--brass);">${c.hp}</span>
       </div>
-      <div class="player-hp-bar" style="margin-left:0;"><div class="player-hp-fill" style="width:${Math.max(0,(c.hpCurrent/c.hpMax)*100)}%; background:${c.hp==='Healthy'||c.hp==='Bruised'?'var(--teal)':c.hp==='Hurt'?'var(--brass)':'var(--danger)'};"></div></div>
     </div>
     <div class="status-field">
       <label>Magic Grounding</label>
@@ -1289,6 +1462,8 @@ If the request has "is_resume": true, the player just reopened the session after
 Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
 When the player finds a notable item, set item_found instead of just mentioning it in prose.
 When the player describes equipping, unequipping, dropping, or otherwise directly picking up an item during the scene (not via item_found), reflect it through inventory_updates rather than only mentioning it in prose — items only move between Equipped/Carried, or vanish/appear, when you set this field. This is the only way inventory changes — the player cannot edit it directly. Every item in inventory_updates.add needs a real "desc" (one short sentence — what it is, why it matters, or its practical use), even for mundane purchases; the player sees this description immediately when the item is gained.
+Item condition: if an item's actual state isn't normal/pristine — broken, out of charge, modified, cracked, jury-rigged, drained — say so directly in its name with a short parenthetical (e.g. "Focus-tool (drained)", "Rusted key (bent)"), not just buried in the description, so it's visible at a glance in the inventory list. When an item's condition changes during play (it breaks, runs out of power, gets fixed, gets modified), use inventory_updates.update with the exact old_name so it's renamed in place rather than treated as a new separate item — don't just narrate the change and leave the inventory list stale.
+Stashing vs. dropping: if the player leaves an item somewhere with any intent to come back for it — hides it, stores it, tucks it away for later — use inventory_updates.stash (with a specific location), not drop. Dropped items are gone for good with no record; stashed items are tracked and can be picked back up later via inventory_updates.retrieve, even many turns later, since the stash list is always in your context regardless of how long it's been.
 Important distinction for inventory_updates.add and item_found: merely describing that an item exists in the scene — a vendor has it for sale, it's sitting in a pile, an NPC is holding it — is NOT the same as the player having it. Never call add or item_found in the same turn an item is first introduced, unless the player's action THAT turn is what caused them to actually receive it (they paid, it was handed to them, they already declared they're taking it). If you've just described something as available/present and the player hasn't chosen to acquire it yet, only narrate — leave inventory_updates and item_found untouched, and let the player's next action (buying it, taking it, asking its price) be what actually triggers the change, on a later turn.
 Also relevant here: physically handling, holding up, showing, or inspecting an item — including mid-negotiation with a vendor, or picking something up just to examine it — is NOT the same as acquiring it either. Only call add once ownership actually changes: a purchase is paid and agreed, a trade is finalized, a found object is kept for good. If the player is holding an item to negotiate over it, haggle, or show someone, just narrate that in prose and wait — don't add it to inventory until the transaction (or scene) actually resolves in the player's favor.
 When a new location, faction, or named NPC is introduced, add it to world_bible_updates so it becomes permanent. Locations are smaller points of interest (a dock office, a market stall, a sealed hatch) — carry a short descriptive phrase, not just a bare name, since this list is the player's persistent reference, not just flavor text. Be selective with NPCs specifically: only log someone who matters to the main story, who the player will likely need to speak to or visit again, or who's clearly recurring — not every vendor, passerby, or one-line background character. Most NPCs the player meets should just stay in the narration and never touch world_bible_updates at all.
@@ -1297,9 +1472,16 @@ World map notes (new_map_notes) exist purely to keep geography consistent, not t
 When a world-significant relic, artifact, or object of lasting importance comes up (not the player's own carried items — those go through inventory_updates/item_found instead), add a short note to new_artifacts.
 The first time the world's currency system comes up in any concrete way (coins named, a price stated, a market transaction), set world_bible_updates.currency to a short description of it (e.g. "Coppers and silver marks; a handful of coppers buys something small.") — this is a one-time reference fact, only update it again if something genuinely changes about how currency works, not on every purchase.
 When a companion's personal arc, relationship to the player, or notable trait shifts meaningfully (not every line of banter — only real development), add a short note via party_updates so it's remembered going forward.
+Quests (quest_updates) — four distinct categories, each with a different job. Capacity limits, pinning, and eviction when a category is full are handled entirely by the app (it defers to the player with an accept/reject prompt when needed) — you don't need to count or manage limits yourself, just propose things naturally in the right category:
+- Main quest (new_main): keep 1-2 active at a time, never more — check the current quest list in the character sheet context before adding another. This is the throughline: it should be what drives the player toward earning coin, finding significant story loot, meeting notable NPCs, running into real encounters, and traveling to/exploring new parts of the map. When a main quest naturally concludes, add its replacement in the same turn or soon after so the throughline never goes empty.
+- Side quests (new_side): quick-to-medium in scope, not epic. Their real purpose is texture — give the player a genuine glimpse into an NPC's life, backstory, or a local trouble worth solving, substantial enough to be its own small arc (uncovering a secret's full truth, repaying a real favor, resolving an actual danger someone warned them about). Rewards should be modest and proportional: simple items, a reasonable amount of coin, and only occasionally something rare, scaled to how difficult or involved the quest actually was.
+- Small requests (new_small): the lightest tier — a single discrete, checkable fact or task, not a story arc. Examples: a favor asked in passing ("check on my sister when you're near the market"), a lead not yet investigated (a rumor, a tip), a code or mechanism worth remembering ("the loose floorboard in the warehouse"), a time-sensitive fact ("the shipment arrives in three days"), an identifying detail that might matter later (a scar, a tattoo). These exist so small but real details survive even many turns later instead of just vanishing from context — log one whenever the player is given or notices something like this that isn't important enough to be a full side quest.
+- Unique events (new_unique): rare and special. Mechanically simpler in scope than a main quest, but should be harder to actually pull off — a real challenge, not busywork. On completion these pay off big: epic loot, a meaningful coin reward, and something that unlocks new story or genuinely makes the main quest easier or more interesting going forward. These shouldn't appear often — when they do, they should feel like a real occasion.
+Mark a quest complete via quest_updates.complete (list its exact title) the turn it's actually finished — don't leave it lingering as active once its resolution has clearly happened in the story.
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). The quest field already carries the overarching hook, so there's no separate field for that. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
-Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated.
+Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Critical: never apply a negative coins_delta (spending) unless the player has explicitly said they're paying/buying/agreeing to the cost — a price being mentioned or a vendor naming a number is not consent, only the player's own action is. If the player hasn't clearly chosen to spend, narrate the offer and wait.
+Resource consistency: before stating any price or cost, check the player's current coins in the character sheet — don't quote a number they can't actually afford unless that's a deliberate narrative beat (a vendor is out of their league, a price is meant to be a real obstacle right now). If the story means for them to be able to afford something, the price should fit what they actually have.
 Magic reserve (character_status.magic_reserve): a small spendable pool, separate from the per-roll grounding modifier, representing the character's capacity for real magical effort. Set it to the new absolute value only when it changes — spend 1 or more on genuinely significant spellwork (not routine use of the grounding-based rolls), and it can be recovered through rest or time spent properly grounded. Leave it null on ordinary turns where nothing about it changed.
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. The only time to return fewer (including zero) is when you've just asked the player a direct yes/no question, or resolution of a roll is still pending — genuinely rare cases, not the default.
 Voice consistency (important): this exact instruction set may be run by different underlying models on different turns, so tone must come from these rules, not from any one model's default style. Keep narration to 2-4 short, plain sentences — no flowery/purple prose, no rhetorical questions to the player, no excessive metaphor stacking. Bex's lines are short, sarcastic, one beat of a joke at most — never a paragraph. Thrum's lines are terse, deadpan, often under 10 words. Keep response_options short and concrete (under ~15 words each), same phrasing style every turn. If in doubt, err toward shorter and plainer — consistency matters more than any single clever line.
@@ -1333,6 +1515,15 @@ Where we are right now: ${state.sessionMeta.whereWeAre || '(session just startin
 Current quest/hook: ${state.character.quest}
 Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none yet)'}
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
+
+QUESTS (do not exceed 1-2 active Main Quests — check the count below before adding another; capacity for Side/Small is app-managed, don't worry about their limits):
+Main (${state.quests.main.filter(q=>q.status!=='complete').length} active): ${state.quests.main.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}`).join(' | ') || '(none yet)'}
+Side: ${state.quests.side.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''}`).join(' | ') || '(none yet)'}
+Small Requests: ${state.quests.small.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}${q.pinned?' [pinned]':''}`).join(' | ') || '(none yet)'}
+Unique Events: ${state.quests.unique.map(q=>`${q.title}${q.status==='complete'?' [complete]':''}`).join(' | ') || '(none yet)'}
+
+STASHED ITEMS (left behind somewhere specific, not currently carried — use inventory_updates.retrieve if the player goes back for one):
+${state.stashes.map(s=>`${s.name} — left at: ${s.location}`).join(' | ') || '(none)'}
 
 SETTINGS:
 Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
@@ -1373,6 +1564,13 @@ const DM_TOOL_SCHEMA = {
         new_artifacts:{type:"array",items:{type:"string"}},
         currency:{type:["string","null"]}
       }, required:["new_locations","new_settlements","new_factions","new_npcs","new_map_notes","new_artifacts","currency"] },
+      quest_updates:{ type:"object", properties:{
+        new_main:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
+        new_side:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
+        new_small:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
+        new_unique:{type:"array",items:{ type:"object", properties:{ title:{type:"string"}, desc:{type:"string"} }, required:["title","desc"] }},
+        complete:{type:"array",items:{type:"string"}}
+      }, required:["new_main","new_side","new_small","new_unique","complete"] },
       party_updates:{ type:"object", properties:{
         bex_note:{type:["string","null"]},
         thrum_note:{type:["string","null"]},
@@ -1383,8 +1581,11 @@ const DM_TOOL_SCHEMA = {
         equip:{type:"array",items:{type:"string"}},
         unequip:{type:"array",items:{type:"string"}},
         drop:{type:"array",items:{type:"string"}},
-        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"} }, required:["name","desc"] }}
-      }, required:["equip","unequip","drop","add"] },
+        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"} }, required:["name","desc"] }},
+        update:{type:"array",items:{ type:"object", properties:{ old_name:{type:"string"}, new_name:{type:"string"}, new_desc:{type:"string"} }, required:["old_name","new_name","new_desc"] }},
+        stash:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, location:{type:"string"} }, required:["name","desc","location"] }},
+        retrieve:{type:"array",items:{type:"string"}}
+      }, required:["equip","unequip","drop","add","update","stash","retrieve"] },
       action_validity:{ type:"object", properties:{
         valid:{type:"boolean"},
         reason:{type:["string","null"]}
@@ -1740,7 +1941,15 @@ async function callDMApi(body, signal){
 async function sendAction(actionText, meta){
   meta = meta || {};
   if(!meta.skipPlayerBubble){
-    state.chat.push({ type: meta.isOOC ? 'player-ooc' : 'player', text: actionText });
+    // Snapshot everything mutable right before this action, so if the player edits this
+    // message later (fixing a typo), we can cleanly undo whatever it caused — currency
+    // spent, items gained, quests added, HP changes — before resending the corrected text.
+    // Only real actions need this; OOC/resume never mutate state in the first place.
+    const preTurnSnapshot = (!meta.isOOC && !meta.isResume) ? JSON.parse(JSON.stringify({
+      character: state.character, worldBible: state.worldBible, party: state.party,
+      sessionMeta: state.sessionMeta, combat: state.combat, quests: state.quests
+    })) : null;
+    state.chat.push({ type: meta.isOOC ? 'player-ooc' : 'player', text: actionText, preTurnSnapshot });
   }
   state.lastOptions = [];
   state.loading = true;
@@ -1830,7 +2039,11 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   }
 
   if(d.character_status && d.character_status.hp_delta) applyHpDelta(d.character_status.hp_delta);
-  if(d.character_status && d.character_status.coins_delta) state.character.coins = Math.max(0, state.character.coins + d.character_status.coins_delta);
+  if(d.character_status && d.character_status.coins_delta){
+    const delta = d.character_status.coins_delta;
+    state.character.coins = Math.max(0, state.character.coins + delta);
+    state.chat.push({ type:'note', text:`🪙 ${delta>0?'+':''}${delta} coils (now ${state.character.coins})` });
+  }
   if(d.character_status && d.character_status.magic_reserve != null) state.character.magicReserve = Math.max(0, Math.min(state.character.magicReserveMax, d.character_status.magic_reserve));
   if(d.quest && d.quest.current) state.character.quest = d.quest.current;
   if(d.combat){
@@ -1861,6 +2074,59 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
       wb.currency = d.world_bible_updates.currency;
       worldBibleChanged = true;
     }
+  }
+
+  function questCap(category){ return category==='side' ? 5 : category==='small' ? 10 : Infinity; }
+  function addQuestOrOverflow(qs, category, entry){
+    const list = qs[category];
+    if(list.some(e=>e.title===entry.title)) return null;
+    const activeCount = list.filter(e=>e.status!=='complete').length;
+    if(activeCount < questCap(category)){
+      list.push({ title:entry.title, desc:entry.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+      return 'added';
+    }
+    if(state.pendingQuestOverflow) return null; // only surface one overflow prompt per turn
+    const candidates = list.filter(e=>e.status!=='complete' && !e.pinned).sort((a,b)=>a.order-b.order);
+    state.pendingQuestOverflow = {
+      category,
+      newQuest: { title:entry.title, desc:entry.desc },
+      evictCandidate: candidates.length ? { title:candidates[0].title } : null
+    };
+    return 'deferred';
+  }
+
+  let questChanged = false;
+  let questTag = null; // which category got new quest activity this turn, for the chat marker
+  if(d.quest_updates){
+    const qs = state.quests;
+    (d.quest_updates.new_main||[]).forEach(x=>{
+      if(!qs.main.some(e=>e.title===x.title)){
+        qs.main.push({ title:x.title, desc:x.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+        questChanged = true; questTag = 'main';
+      }
+    });
+    (d.quest_updates.new_side||[]).forEach(x=>{
+      if(addQuestOrOverflow(qs, 'side', x) === 'added'){ questChanged = true; questTag = questTag || 'side'; }
+    });
+    (d.quest_updates.new_small||[]).forEach(x=>{
+      if(addQuestOrOverflow(qs, 'small', x) === 'added'){ questChanged = true; questTag = questTag || 'small'; }
+    });
+    (d.quest_updates.new_unique||[]).forEach(x=>{
+      if(!qs.unique.some(e=>e.title===x.title)){
+        qs.unique.push({ title:x.title, desc:x.desc, status:'active', pinned:false, order:qs.nextOrder++ });
+        questChanged = true; questTag = questTag || 'unique';
+      }
+    });
+    (d.quest_updates.complete||[]).forEach(title=>{
+      [qs.main, qs.side, qs.small, qs.unique].forEach(list=>{
+        const found = list.find(e=>e.title===title && e.status!=='complete');
+        if(found){ found.status = 'complete'; questChanged = true; questTag = questTag || 'complete'; }
+      });
+    });
+  }
+  if(questTag){
+    const lastDm = existingMsgRef || [...state.chat].reverse().find(m=>m.type==='dm' && !m.isOOC);
+    if(lastDm) lastDm.questTag = questTag;
   }
 
   let partyChanged = false;
@@ -1903,6 +2169,35 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
         inventoryChanged = true;
       }
     });
+    (d.inventory_updates.update||[]).forEach(u=>{
+      const invIdx = c.inventory.indexOf(u.old_name);
+      const eqIdx = c.equipped.indexOf(u.old_name);
+      if(invIdx>=0){ c.inventory[invIdx] = u.new_name; inventoryChanged = true; }
+      if(eqIdx>=0){ c.equipped[eqIdx] = u.new_name; inventoryChanged = true; }
+      if(invIdx>=0 || eqIdx>=0){
+        delete c.itemInfo[u.old_name];
+        c.itemInfo[u.new_name] = u.new_desc || '';
+      }
+    });
+    (d.inventory_updates.stash||[]).forEach(s=>{
+      const ii = c.inventory.indexOf(s.name); if(ii>=0) c.inventory.splice(ii,1);
+      const ei = c.equipped.indexOf(s.name); if(ei>=0) c.equipped.splice(ei,1);
+      if(!state.stashes.some(existing=>existing.name===s.name)){
+        state.stashes.push({ name:s.name, desc:s.desc||'', location:s.location||'unspecified location' });
+      }
+      inventoryChanged = true;
+    });
+    (d.inventory_updates.retrieve||[]).forEach(name=>{
+      const idx = state.stashes.findIndex(s=>s.name===name);
+      if(idx>=0){
+        const stashed = state.stashes.splice(idx,1)[0];
+        if(!c.inventory.includes(stashed.name) && !c.equipped.includes(stashed.name)){
+          c.inventory.push(stashed.name);
+          c.itemInfo[stashed.name] = stashed.desc;
+        }
+        inventoryChanged = true;
+      }
+    });
   }
 
   if(d.item_found){
@@ -1912,15 +2207,16 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   } else if(newlyGained.length){
     state.pendingItemClaim = { kind:'items-gained', items:newlyGained };
   } else if(d.requires_roll){
-    state.modal = { kind:'dice', requirement:d.requires_roll, chosenDie:d.requires_roll.die, result:null };
+    state.pendingRoll = d.requires_roll;
   }
 
   await persistSaveFiles();
-  if(worldBibleChanged || partyChanged || inventoryChanged || (d.save_worthy||[]).length){
+  if(worldBibleChanged || partyChanged || inventoryChanged || questChanged || (d.save_worthy||[]).length){
     const parts = [];
     if(worldBibleChanged) parts.push('world bible');
     if(partyChanged) parts.push('party');
     if(inventoryChanged) parts.push('inventory');
+    if(questChanged) parts.push('quests');
     if((d.save_worthy||[]).length) parts.push('session log');
     state.chat.push({ type:'note', text:`💾 Auto-saved — ${parts.join(', ')} updated.` });
   }
@@ -2144,6 +2440,15 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
 - Hit damage = roll a d6.
 - Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
+
+### How Quests Work
+- **Main Quest** — the throughline; 1-2 active at a time, never more. Drives earning coin, story loot, encounters, NPCs, and exploring/traveling the map. Never capacity-limited, never evicted.
+- **Side Quests** — max 5 active. Quick-to-medium arcs giving real backstory/texture (an NPC's life, a local trouble). Rewards: simple items, reasonable coin, occasionally something rare.
+- **Small Requests** — max 10 active. Lightweight discrete facts/favors/leads (a favor asked in passing, a rumor, a code, a deadline) — exist so small details survive many turns without being forgotten.
+- **Unique Events** — no cap, but rare by design. Simpler in scope than a Main Quest but genuinely harder to pull off. Big payoff: epic loot, meaningful coin, and something that eases the main story.
+- **Pinning** — up to 2 Side Quests and 2 Small Requests can be pinned to exempt them from eviction (Main/Unique never need pinning, they're never evicted).
+- **When Side/Small hits its cap**, a new one doesn't silently bump an old one — you get an Accept/Reject prompt showing exactly which (oldest, unpinned) quest would be dropped. Accepting evicts it with a "you've forgotten about..." note; rejecting just declines the new one.
+- Actual current quests live in session_log.md → Active Quests, not here — this section is just the rules of how the system works.
 `;
   }
   if(kind === 'party'){
@@ -2181,6 +2486,21 @@ ${state.sessionMeta.recentEvents.map(s=>'- '+s).join('\n') || '- (none yet)'}
 
 ## Open Threads
 ${state.sessionMeta.openThreads.map(s=>'- '+s).join('\n') || '- (none yet)'}
+
+## Active Quests
+### Main Quest
+${state.quests.main.filter(q=>q.status!=='complete').map(q=>`- **${q.title}** — ${q.desc}`).join('\n') || '- (none yet)'}
+### Side Quests (${state.quests.side.filter(q=>q.status!=='complete').length}/5)
+${state.quests.side.filter(q=>q.status!=='complete').map(q=>`- **${q.title}**${q.pinned?' 📌':''} — ${q.desc}`).join('\n') || '- (none yet)'}
+### Small Requests (${state.quests.small.filter(q=>q.status!=='complete').length}/10)
+${state.quests.small.filter(q=>q.status!=='complete').map(q=>`- **${q.title}**${q.pinned?' 📌':''} — ${q.desc}`).join('\n') || '- (none yet)'}
+### Unique Events
+${state.quests.unique.filter(q=>q.status!=='complete').map(q=>`- **${q.title}** — ${q.desc}`).join('\n') || '- (none yet)'}
+### Completed
+${[...state.quests.main,...state.quests.side,...state.quests.small,...state.quests.unique].filter(q=>q.status==='complete').map(q=>'- '+q.title).join('\n') || '- (none yet)'}
+
+## Stashed Items
+${state.stashes.map(s=>`- **${s.name}** — left at: ${s.location}`).join('\n') || '- (none)'}
 
 ## Party Status
 - **${c.name}:** ${c.hp} *(full inventory/coins/magic reserve in character_sheet.md)*
