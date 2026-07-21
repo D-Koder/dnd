@@ -3576,10 +3576,12 @@ async function loadMapBackground(queryOverride){
     const imgUrl = pick.thumburl || pick.url;
     // Load as a real <img> element (not CSS background-image) — reuse the same element that
     // proves the load succeeded, rather than discarding it and re-requesting via a different
-    // browser code path that handles cross-origin resources differently.
+    // browser code path that handles cross-origin resources differently. Deliberately NOT
+    // setting crossOrigin here — we only display this image, never read its pixels via canvas,
+    // so CORS isn't actually required, and requiring it anyway can make the browser block
+    // display entirely if the server doesn't consistently send CORS headers for every request.
     const imgEl = await new Promise((resolve, reject) => {
       const el = new Image();
-      el.crossOrigin = 'anonymous';
       el.onload = () => resolve(el);
       el.onerror = reject;
       el.src = imgUrl;
@@ -3595,7 +3597,7 @@ async function loadMapBackground(queryOverride){
     bg.innerHTML = '';
     bg.appendChild(imgEl);
     requestAnimationFrame(()=>bg.classList.add('loaded'));
-    logDebugEntry({ context:'Background image', action: queryOverride ? 'scene change → new map loaded' : 'live map loaded', message:`query "${query}" → ${imgUrl}`, attempts:null });
+    logDebugEntry({ context:'Background image', action: queryOverride ? 'scene change → new map loaded' : 'live map loaded', message:`query "${query}" → ${imgUrl} (decoded ${imgEl.naturalWidth}x${imgEl.naturalHeight}px)`, attempts:null });
     try{ render(); }catch(e){}
   }catch(err){
     console.warn('Live map fetch unavailable, using glyph watermark fallback:', err.message);
