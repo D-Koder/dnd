@@ -27,16 +27,16 @@
       linear-gradient(160deg, #0F1E1D 0%, #0C1A19 55%, #0F1F1C 100%);
   }
   #map-bg{ position:fixed; inset:0; z-index:-2; background-size:cover; background-position:center; overflow:hidden;
-    opacity:0; transition:opacity 1.4s ease; filter:sepia(20%) saturate(90%) brightness(0.85); }
+    opacity:0; transition:opacity 1.4s ease; filter:sepia(30%) saturate(70%) brightness(0.55) blur(1px); }
   #map-bg.loaded{ opacity:1; }
   #map-bg img{ width:100%; height:100%; object-fit:cover; display:block; }
   #map-wash{ position:fixed; inset:0; z-index:-1;
-    background:linear-gradient(180deg, rgba(15,30,29,0.55) 0%, rgba(15,30,29,0.35) 40%, rgba(15,30,29,0.65) 100%); }
+    background:linear-gradient(180deg, rgba(15,30,29,0.72) 0%, rgba(15,30,29,0.55) 40%, rgba(15,30,29,0.8) 100%); }
   .scanlines{ position:fixed; inset:0; pointer-events:none; z-index:40;
     background:repeating-linear-gradient(0deg, rgba(0,0,0,0.05) 0px, rgba(0,0,0,0.05) 1px, transparent 1px, transparent 3px);
     opacity:0.3; mix-blend-mode:overlay; }
 
-  #app{ display:flex; flex-direction:column; height:100vh; max-width:640px; margin:0 auto; position:relative; }
+  #app{ display:flex; flex-direction:column; height:100vh; height:100dvh; max-width:640px; margin:0 auto; position:relative; }
 
   /* ---- bottom tab bar: underline nav, not icon chips ---- */
   .tab-bar{
@@ -1778,6 +1778,11 @@ function renderSpellInfoModal(m){
   </div>`;
 }
 
+function normalizeItemMeta(raw){
+  if(!raw) return { desc:'', damage:null, armor:null, statBonus:null };
+  if(typeof raw === 'string') return { desc: raw, damage:null, armor:null, statBonus:null }; // legacy plain-string entries
+  return { desc: raw.desc||'', damage: raw.damage||null, armor: (raw.armor!=null?raw.armor:null), statBonus: raw.statBonus||null };
+}
 function itemLedClass(name, desc){
   const text = (name + ' ' + (desc||'')).toLowerCase();
   if(/reactive|charged|synced|warm|active/.test(text)) return 'led-teal';
@@ -1786,14 +1791,15 @@ function itemLedClass(name, desc){
   return 'led-brass';
 }
 function itemRow(name){
-  const desc = state.character.itemInfo && state.character.itemInfo[name];
-  return `<div class="item-row ${itemLedClass(name, desc)}" onclick='openItemInfo(${escAttr(JSON.stringify(name))})'>
+  const meta = normalizeItemMeta(state.character.itemInfo && state.character.itemInfo[name]);
+  return `<div class="item-row ${itemLedClass(name, meta.desc)}" onclick='openItemInfo(${escAttr(JSON.stringify(name))})'>
     <div class="item-row-name">${escHtml(name)}</div>
     <span class="item-row-arrow">›</span>
   </div>`;
 }
 function slotRow(label, itemName){
-  return `<div class="item-row ${itemName ? itemLedClass(itemName, state.character.itemInfo && state.character.itemInfo[itemName]) : 'led-dim'}" ${itemName ? `onclick='openItemInfo(${escAttr(JSON.stringify(itemName))})'` : ''}>
+  const meta = itemName ? normalizeItemMeta(state.character.itemInfo && state.character.itemInfo[itemName]) : null;
+  return `<div class="item-row ${itemName ? itemLedClass(itemName, meta.desc) : 'led-dim'}" ${itemName ? `onclick='openItemInfo(${escAttr(JSON.stringify(itemName))})'` : ''}>
     <div class="item-row-name"><span style="color:var(--cream-dim); font-family:var(--mono); font-size:9px; letter-spacing:1px; margin-right:8px;">${label.toUpperCase()}</span>${itemName ? escHtml(itemName) : '<span style="opacity:0.5; font-style:italic;">Empty</span>'}</div>
     ${itemName ? '<span class="item-row-arrow">›</span>' : ''}
   </div>`;
@@ -1826,15 +1832,24 @@ function renderInventoryTab(){
   `;
 }
 function openItemInfo(name){
-  const desc = (state.character.itemInfo && state.character.itemInfo[name]) || null;
-  state.modal = { kind:'item-info', name, desc };
+  const meta = normalizeItemMeta(state.character.itemInfo && state.character.itemInfo[name]);
+  state.modal = { kind:'item-info', name, meta };
   render();
 }
 function renderItemInfoModal(m){
+  const meta = m.meta || { desc:'', damage:null, armor:null, statBonus:null };
+  const hasStats = meta.damage || meta.armor != null || meta.statBonus;
   return `<div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="sheet">
       <h3>${escHtml(m.name)}</h3>
-      <div class="rc-meta" style="line-height:1.7;">${escHtml(m.desc || 'No description recorded for this item yet.')}</div>
+      ${hasStats ? `
+        <div class="ref-row" style="flex-wrap:wrap; margin-bottom:10px;">
+          ${meta.damage ? `<div class="ref-card" style="flex:1; min-width:110px; text-align:center; margin-bottom:0;"><div class="rc-name">Damage</div><div style="font-size:15px; color:var(--brass); margin-top:2px;">⚔️ ${escHtml(meta.damage.die)} ${escHtml(meta.damage.type)}</div></div>` : ''}
+          ${meta.armor != null ? `<div class="ref-card" style="flex:1; min-width:110px; text-align:center; margin-bottom:0;"><div class="rc-name">Armor</div><div style="font-size:15px; color:var(--brass); margin-top:2px;">🛡️ +${meta.armor} AC</div></div>` : ''}
+          ${meta.statBonus ? `<div class="ref-card" style="flex:1; min-width:110px; text-align:center; margin-bottom:0;"><div class="rc-name">Bonus</div><div style="font-size:15px; color:var(--brass); margin-top:2px;">${meta.statBonus.amount>=0?'+':''}${meta.statBonus.amount} ${(STAT_LABELS[meta.statBonus.stat]||meta.statBonus.stat.toUpperCase())}</div></div>` : ''}
+        </div>
+      ` : ''}
+      <div class="rc-meta" style="line-height:1.7;">${escHtml(meta.desc || 'No description recorded for this item yet.')}</div>
       <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
     </div>
   </div>`;
@@ -2100,7 +2115,7 @@ Conditions: apply real D&D conditions via character_status.conditions_add/condit
 Death saves: when hpCurrent would hit 0, the app automatically starts real death-save resolution — you don't manage that mechanically, just narrate around whatever the player's death save results turn out to be once they come back to you.
 Resting: when the player takes a genuine short or long rest in the story, set character_status.rest to "short" or "long" — the app handles the actual HP/Magic Reserve/exhaustion recovery. Don't apply hp_delta manually for a rest; the rest field does that correctly on its own.
 Status effects (fire, poison, bleed, etc.): when an attack or hazard would leave a lingering effect on an enemy, add it to combat.status_effects (name, a single emoji icon, turns_left) — this is purely for the player to see it's active, the app doesn't automatically tick damage. You still narrate and apply the ongoing damage yourself each turn it's relevant (via enemy_hp), and update or remove the effect from status_effects as it fades or gets cured. Don't leave a stale effect listed after it's actually over.
-Item effects: when an item does something mechanically relevant (heals HP, boosts a stat/roll temporarily, has a combat use), say so plainly in its desc when added via inventory_updates — the player only sees this in the item's info panel, so it needs to actually state the effect, not just flavor text.
+Item effects: when an item does something mechanically relevant (heals HP, boosts a stat/roll temporarily, has a combat use), say so plainly in its desc when added via inventory_updates — the player only sees this in the item's info panel, so it needs to actually state the effect, not just flavor text. For an actual weapon, tool-weapon, or armor piece specifically, also fill the structured fields: damage ({die, type}) for anything that can be used to attack or deal damage, armor (a plain AC bonus number) for anything worn that protects, and stat_bonus ({stat, amount}) for anything that boosts an ability score while equipped/carried. Leave whichever of these don't apply as null rather than guessing — a torch doesn't need a damage entry just because it's an item, and not every item needs any of these three at all.
 If the request has "is_ooc": true, the player is stepping out of character to ask you something directly — a lore question, a rules clarification, "what did I miss," anything meta. Answer plainly and helpfully in the narration field, breaking the fourth wall freely. Do not advance the scene, do not have companions react, do not introduce new locations/factions/NPCs/items, and just repeat the current values for character_status/quest/combat/world_bible_updates/party_updates/save_worthy unchanged — nothing about the world actually happened.
 If the request has "is_resume": true, the player just reopened the session after time away — there is no real player action, just pick the story back up naturally from where_we_are and the current quest given in the save files. Narrate a brief re-establishing beat (not a full recap, they already have that) and always give 3 real response_options for what to do next.
 Validity check: before narrating an action forward, ask whether it's actually possible given the character sheet, inventory/equipped, and world state — e.g. casting a spell/power they don't have, unequipping an item that isn't equipped or is described as cursed/stuck, summoning something with no established means to do so. If it's not possible, set action_validity to {"valid": false, "reason": "<short in-world reason>"} and leave narration/companions minimal or empty — do not advance the scene or change any state. If the request has "override_invalid": true, the player has deliberately chosen to force it through anyway — always set action_validity.valid to true in that case and narrate the action actually happening, with appropriate consequences. Never flag ordinary, merely risky or foolish actions as invalid — that's what dice rolls are for; this check is only for things the character sheet says are flatly impossible.
@@ -2242,8 +2257,8 @@ const DM_TOOL_SCHEMA = {
         equip:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, slot:{type:"string",enum:["head","body","feet","accessory","hand1h","hand2h"]} }, required:["name","slot"] }},
         unequip:{type:"array",items:{type:"string"}},
         drop:{type:"array",items:{type:"string"}},
-        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"} }, required:["name","desc"] }},
-        update:{type:"array",items:{ type:"object", properties:{ old_name:{type:"string"}, new_name:{type:"string"}, new_desc:{type:"string"} }, required:["old_name","new_name","new_desc"] }},
+        add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} }, required:["name","desc","damage","armor","stat_bonus"] }},
+        update:{type:"array",items:{ type:"object", properties:{ old_name:{type:"string"}, new_name:{type:"string"}, new_desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} }, required:["old_name","new_name","new_desc","damage","armor","stat_bonus"] }},
         stash:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, location:{type:"string"} }, required:["name","desc","location"] }},
         retrieve:{type:"array",items:{type:"string"}}
       }, required:["equip","unequip","drop","add","update","stash","retrieve"] },
@@ -2253,7 +2268,7 @@ const DM_TOOL_SCHEMA = {
       }, required:["valid","reason"] },
       combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]}, status_effects:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, icon:{type:"string"}, turns_left:{type:"number"} }, required:["name","icon","turns_left"] }} }, required:["active","enemy_name","enemy_hp","enemy_max_hp","status_effects"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"}, stat:{type:["string","null"],enum:["str","dex","con","int","wis","cha",null]}, skill:{type:["string","null"]}, save:{type:"boolean"}, advantage:{type:"boolean"}, disadvantage:{type:"boolean"} } },
-      item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"} } },
+      item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
     },
@@ -2865,7 +2880,7 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
       const name = entry.name, desc = entry.desc || '';
       if(!c.inventory.includes(name) && !isEquipped(name)){
         c.inventory.push(name);
-        c.itemInfo[name] = desc;
+        c.itemInfo[name] = { desc, damage: entry.damage||null, armor: (entry.armor!=null?entry.armor:null), statBonus: entry.stat_bonus||null };
         newlyGained.push({ name, desc });
         inventoryChanged = true;
       }
@@ -2881,15 +2896,22 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
       if(hand){ hand.name = u.new_name; renamedEquipped = true; }
       if(renamedEquipped) inventoryChanged = true;
       if(invIdx>=0 || renamedEquipped){
+        const prevMeta = normalizeItemMeta(c.itemInfo[u.old_name]);
         delete c.itemInfo[u.old_name];
-        c.itemInfo[u.new_name] = u.new_desc || '';
+        c.itemInfo[u.new_name] = {
+          desc: u.new_desc || '',
+          damage: u.damage !== undefined ? u.damage : prevMeta.damage,
+          armor: u.armor !== undefined ? u.armor : prevMeta.armor,
+          statBonus: u.stat_bonus !== undefined ? u.stat_bonus : prevMeta.statBonus,
+        };
       }
     });
     (d.inventory_updates.stash||[]).forEach(s=>{
       const ii = c.inventory.indexOf(s.name); if(ii>=0) c.inventory.splice(ii,1);
       unequipItem(s.name);
       if(!state.stashes.some(existing=>existing.name===s.name)){
-        state.stashes.push({ name:s.name, desc:s.desc||'', location:s.location||'unspecified location' });
+        const existingMeta = normalizeItemMeta(c.itemInfo[s.name]);
+        state.stashes.push({ name:s.name, desc: s.desc || existingMeta.desc || '', location:s.location||'unspecified location', damage: existingMeta.damage, armor: existingMeta.armor, statBonus: existingMeta.statBonus });
       }
       inventoryChanged = true;
     });
@@ -2899,7 +2921,7 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
         const stashed = state.stashes.splice(idx,1)[0];
         if(!c.inventory.includes(stashed.name) && !isEquipped(stashed.name)){
           c.inventory.push(stashed.name);
-          c.itemInfo[stashed.name] = stashed.desc;
+          c.itemInfo[stashed.name] = { desc: stashed.desc||'', damage: stashed.damage||null, armor: (stashed.armor!=null?stashed.armor:null), statBonus: stashed.statBonus||null };
         }
         inventoryChanged = true;
       }
@@ -2908,7 +2930,7 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
 
   if(d.item_found){
     if(!state.character.itemInfo) state.character.itemInfo = {};
-    state.character.itemInfo[d.item_found.name] = d.item_found.desc || '';
+    state.character.itemInfo[d.item_found.name] = { desc: d.item_found.desc || '', damage: d.item_found.damage||null, armor: (d.item_found.armor!=null?d.item_found.armor:null), statBonus: d.item_found.stat_bonus||null };
     state.pendingItemClaim = { kind:'item', item:d.item_found };
   } else if(newlyGained.length){
     state.pendingItemClaim = { kind:'items-gained', items:newlyGained };
@@ -3060,9 +3082,21 @@ function parseCharacterSheetMd(text){
   const itemDescSection = extractSection(text, 'Item Descriptions');
   if(itemDescSection && !/^\(none recorded yet\)$/i.test(itemDescSection.trim())){
     const itemInfo = {};
-    extractListItems(itemDescSection).forEach(line=>{
-      const m = line.match(/\*\*(.+?):\*\*\s*(.*)/);
-      if(m) itemInfo[m[1].trim()] = m[2].trim();
+    let currentName = null;
+    itemDescSection.split('\n').forEach(line=>{
+      const topMatch = line.match(/^-\s*\*\*(.+?):\*\*\s*(.*)$/);
+      if(topMatch){
+        currentName = topMatch[1].trim();
+        itemInfo[currentName] = { desc: topMatch[2].trim(), damage:null, armor:null, statBonus:null };
+        return;
+      }
+      if(!currentName) return;
+      const dmgMatch = line.match(/^\s+-\s*Damage:\s*(\S+)\s+(.+)$/i);
+      if(dmgMatch){ itemInfo[currentName].damage = { die:dmgMatch[1].trim(), type:dmgMatch[2].trim() }; return; }
+      const armorMatch = line.match(/^\s+-\s*Armor:\s*\+?(-?\d+)/i);
+      if(armorMatch){ itemInfo[currentName].armor = parseInt(armorMatch[1],10); return; }
+      const bonusMatch = line.match(/^\s+-\s*Bonus:\s*([+-]?\d+)\s+(\w+)/i);
+      if(bonusMatch){ itemInfo[currentName].statBonus = { amount:parseInt(bonusMatch[1],10), stat:bonusMatch[2].trim().toLowerCase() }; return; }
     });
     if(Object.keys(itemInfo).length) out.itemInfo = itemInfo;
   }
@@ -3233,6 +3267,13 @@ async function handleImportFiles(event){
   render();
 }
 
+function formatItemLine(name, meta){
+  const lines = [`- **${name}:** ${meta.desc || '(no description)'}`];
+  if(meta.damage) lines.push(`  - Damage: ${meta.damage.die} ${meta.damage.type}`);
+  if(meta.armor != null) lines.push(`  - Armor: +${meta.armor} AC`);
+  if(meta.statBonus) lines.push(`  - Bonus: ${meta.statBonus.amount>=0?'+':''}${meta.statBonus.amount} ${meta.statBonus.stat.toUpperCase()}`);
+  return lines.join('\n');
+}
 function formatQuestLine(q){
   const pin = q.pinned ? ' 📌' : '';
   const goalsBlock = (q.goals && q.goals.length) ? q.goals.map(g=>`  - [${g.done?'x':' '}] ${g.text}`).join('\n') : '';
@@ -3273,7 +3314,7 @@ function buildFileContent(kind){
 *Head/Body/Feet/Accessory are single-item slots — equipping something new swaps out the old one. Hands are capacity-based: a one-handed item costs 1, two-handed costs both.*
 
 ## Item Descriptions
-${Object.keys(c.itemInfo||{}).filter(name=>c.itemInfo[name]).map(name=>`- **${name}:** ${c.itemInfo[name]}`).join('\n') || '- (none recorded yet)'}
+${Object.keys(c.itemInfo||{}).filter(name=>c.itemInfo[name]).map(name=>formatItemLine(name, normalizeItemMeta(c.itemInfo[name]))).join('\n') || '- (none recorded yet)'}
 
 ## Level & Experience
 - **Level:** ${c.level}
@@ -3368,6 +3409,7 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - **Skills** are named capabilities (Relic Read, Scheme, Ground & Channel, Jury-Rig for Raken) that are binary — proficient or not, same as real D&D, no ranks or point-buy. Being proficient adds the character's current proficiency bonus to a roll using that skill; untrained adds nothing beyond the raw ability modifier.
 - New skill proficiency choices are granted at levels 4, 8, 12, 16, and 19, alongside the Ability Score Improvement at those same levels — a homebrew adaptation, since there's no class/background here to hand out fixed proficiencies the normal way.
 - **Status effects** (fire, poison, bleed, etc.) on an enemy are tracked for display only — the DM still narrates and applies the ongoing damage each turn manually, the tracker just keeps it visible so it isn't forgotten.
+- **Items** carry the same kind of structured data when relevant — a weapon or tool-weapon can have a damage die/type, worn armor can have a flat AC bonus, and any item can carry an ability score bonus while equipped/carried. All three are optional per item and shown in the item's info panel alongside its description, not every item needs any of them.
 
 ### How Equipment Slots Work
 - Real slots, not an unlimited list: Head, Body, Feet, and two Accessory slots each hold exactly one item — equipping something new to an occupied slot swaps the old item back to inventory automatically.
