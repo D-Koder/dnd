@@ -7,7 +7,7 @@
 ## Current Status
 - **HP:** 20/20 (Healthy)
 - **Magic Grounding:** On Stone
-- **Coins:** 8 coils *(see world_bible.md → Currency)*
+- **Coins:** 2 coils *(see world_bible.md → Currency)*
 - **Magic Reserve:** 3/3
 - **Quest:** The Hum Job *(full detail in session_log.md → Current Quest / Hook)*
 - **Inventory:** Relic-scanning kit, Rusted key (in pedestal), Dormant egg-object (unpaired), Corr's family disc, Glow-sticks (x3), Cracked capacitor, Copper wire (short coil), Rope (mid-length, climbing-grade), Day-pack food (x1)
@@ -38,6 +38,7 @@
 - **Level:** 1
 - **Proficiency Bonus:** +2
 - **XP:** 0 / 300
+- **Skill Points Banked:** 0
 
 ## Ability Scores
 - **STR:** 8 (-1)
