@@ -386,6 +386,7 @@ function createDefaultState(){
       permadeath: false,
       difficulty: 'medium', // 'easy' | 'medium' | 'hard' | 'deadly'
       fastMode: false, // true = Haiku (faster, simpler prose), false = Sonnet (slower, sharper writing)
+      showTokens: false, // opt-in: show a token-usage note after each DM turn
       writingStyle: 'standard', // 'standard' | 'simple'
       focus: 'balanced', // 'balanced' | 'worldbuilding' | 'character'
     },
@@ -2533,6 +2534,14 @@ function renderStatusTab(){
       <div class="flavor" style="margin-top:6px; font-size:12px;">${state.settings.fastMode ? 'Haiku — quicker replies, simpler prose.' : 'Sonnet — slower, sharper writing and judgment.'}</div>
     </div>
     <div class="status-field">
+      <label>Token Usage</label>
+      <div class="charge-btns">
+        <button class="${!state.settings.showTokens?'active':''}" onclick="setShowTokens(false)">Hidden</button>
+        <button class="${state.settings.showTokens?'active':''}" onclick="setShowTokens(true)">Shown</button>
+      </div>
+      <div class="flavor" style="margin-top:6px; font-size:12px;">${state.settings.showTokens ? 'A token count appears after each DM reply.' : 'Token counts hidden (still in the Debug Log).'}</div>
+    </div>
+    <div class="status-field">
       <label>Writing Style</label>
       <div class="charge-btns">
         <button class="${state.settings.writingStyle==='standard'?'active':''}" onclick="setWritingStyle('standard')">Standard</button>
@@ -2562,6 +2571,7 @@ function renderStatusTab(){
 function setPermadeath(val){ state.settings.permadeath = val; persistSettings(); render(); }
 function setDifficulty(val){ state.settings.difficulty = val; persistSettings(); render(); }
 function setFastMode(val){ state.settings.fastMode = val; persistSettings(); render(); }
+function setShowTokens(val){ state.settings.showTokens = val; persistSettings(); render(); }
 function setWritingStyle(val){ state.settings.writingStyle = val; persistSettings(); render(); }
 function setFocus(val){ state.settings.focus = val; persistSettings(); render(); }
 function openDebugLog(){ state.modal = { kind:'debug-log' }; render(); }
@@ -3238,6 +3248,15 @@ async function sendAction(actionText, meta){
       attempts: null
     });
     await applyDMResponse(result.input, meta, actionText, null, result.provider);
+    if(state.settings.showTokens){
+      const inTok = usage.input_tokens||usage.prompt_tokens;
+      const outTok = usage.output_tokens||usage.completion_tokens;
+      const cacheRead = usage.cache_read_input_tokens||0;
+      if(inTok != null || outTok != null){
+        state.chat.push({ type:'note', text:`🪙 Tokens — in: ${inTok??'?'} · out: ${outTok??'?'}${cacheRead?` · cached: ${cacheRead}`:''}`, ephemeral:true });
+        render();
+      }
+    }
   }catch(err){
     logDebugEntry({
       context: 'DM API call',
@@ -4387,7 +4406,7 @@ ${state.party.thrum}
       if(m.type==='dm' && !m.isOOC) return `**DM:** ${m.text}` + (m.companions||[]).map(cc=>`\n> **${cc.name}:** ${cc.line}`).join('');
       if(m.type==='player') return `**You:** ${m.text}`;
       if(m.type==='roll') return `_${m.text}_`;
-      if(m.type==='note') return `_${m.text}_`;
+      if(m.type==='note' && !m.ephemeral) return `_${m.text}_`;
       return '';
     }).filter(s=>s).join('\n\n');
     const today = new Date().toISOString().slice(0,10);
