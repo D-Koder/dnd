@@ -1923,34 +1923,17 @@ function renderLibraryTab(){
   return `
     <h2>${glyph('tab-icon-inline')} Library</h2>
     <div class="ref-row" style="margin-bottom:16px; flex-wrap:wrap;">
-      <button class="pill-btn ${state.library.section==='monsters'?'':'btn-secondary'}" style="${state.library.section==='monsters'?'':'background:transparent;'}" onclick="setLibrarySection('monsters')">Encountered Monsters</button>
+      <button class="pill-btn ${state.library.section==='monsters'?'':'btn-secondary'}" style="${state.library.section==='monsters'?'':'background:transparent;'}" onclick="setLibrarySection('monsters')">Bestiary</button>
       <button class="pill-btn ${state.library.section==='abilities'?'':'btn-secondary'}" style="${state.library.section==='abilities'?'':'background:transparent;'}" onclick="setLibrarySection('abilities')">Abilities</button>
-      <button class="pill-btn ${state.library.section==='lore'?'':'btn-secondary'}" style="${state.library.section==='lore'?'':'background:transparent;'}" onclick="setLibrarySection('lore')">Lore</button>
       <button class="pill-btn ${state.library.section==='conditions'?'':'btn-secondary'}" style="${state.library.section==='conditions'?'':'background:transparent;'}" onclick="setLibrarySection('conditions')">Conditions</button>
     </div>
-    ${state.library.section==='abilities' ? renderAbilitiesTab(true) : state.library.section==='lore' ? renderLoreTab(true) : state.library.section==='conditions' ? renderConditionsLibrary() : renderEncounteredMonstersTab(true)}
+    ${state.library.section==='abilities' ? renderAbilitiesTab(true) : state.library.section==='conditions' ? renderConditionsLibrary() : renderEncounteredMonstersTab(true)}
   `;
 }
-function renderLoreTab(nested){
-  const log = state.knowledgeLog;
-  const spells = log.filter(k=>k.category==='spell');
-  const creatures = log.filter(k=>k.category==='creature');
-  const loreCard = (k,i) => `
-    <div class="ref-card" style="cursor:pointer;" onclick="openLoreInfo(${i})">
-      <div class="rc-name">${escHtml(k.name)}</div>
-      <div class="rc-meta">${k.sources.length} source${k.sources.length>1?'s':''} · tap for details</div>
-    </div>`;
-  return `
-    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Lore</h2>`}
-    <div class="flavor" style="margin-bottom:10px;">What Raken actually knows or has heard about — not exact combat data, just what's actually been learned and how.</div>
-    <div class="subhead" style="margin-top:0;">Spells</div>
-    ${spells.length ? spells.map((k)=>loreCard(k, log.indexOf(k))).join('') : '<div class="msg-note">Nothing heard of yet.</div>'}
-    <div class="subhead">Creatures</div>
-    ${creatures.length ? creatures.map((k)=>loreCard(k, log.indexOf(k))).join('') : '<div class="msg-note">Nothing heard of yet.</div>'}
-  `;
-}
-function openLoreInfo(i){
-  state.modal = { kind:'lore-info', entry: state.knowledgeLog[i] };
+function openLoreInfoByName(name, category){
+  const entry = state.knowledgeLog.find(k=>k.name===name && k.category===category);
+  if(!entry) return;
+  state.modal = { kind:'lore-info', entry };
   render();
 }
 function renderLoreInfoModal(m){
@@ -1970,14 +1953,23 @@ function renderLoreInfoModal(m){
 }
 function renderEncounteredMonstersTab(nested){
   const log = state.creatureLog;
+  const fullNames = new Set(log.map(cr=>cr.name));
+  const loreOnly = state.knowledgeLog.filter(k=>k.category==='creature' && !fullNames.has(k.name)); // de-duped — a creature you've fully fought supersedes a rumor about it
   return `
-    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Encountered Monsters</h2>`}
-    ${log.length ? log.map((cr,i)=>`
+    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Bestiary</h2>`}
+    ${log.map((cr,i)=>`
       <div class="ref-card" style="cursor:pointer;" onclick="openMonsterInfo(${i})">
         <div class="rc-name">${escHtml(cr.name)}</div>
         <div class="rc-meta">${escHtml(cr.tier)} tier · ${escHtml(cr.location)} · tap for details</div>
       </div>
-    `).join('') : '<div class="msg-note">No monsters encountered yet — they\'ll appear here as you fight them.</div>'}
+    `).join('')}
+    ${loreOnly.map(k=>`
+      <div class="ref-card" style="cursor:pointer;" onclick='openLoreInfoByName(${escAttr(JSON.stringify(k.name))}, "creature")'>
+        <div class="rc-name">${escHtml(k.name)} <span style="font-size:10px; color:var(--brass); opacity:0.85;">(heard of)</span></div>
+        <div class="rc-meta">${k.sources.length} source${k.sources.length>1?'s':''} · tap for details</div>
+      </div>
+    `).join('')}
+    ${(!log.length && !loreOnly.length) ? '<div class="msg-note">Nothing encountered or heard of yet.</div>' : ''}
   `;
 }
 function openMonsterInfo(i){
@@ -2007,6 +1999,7 @@ function renderMonsterInfoModal(m){
 function renderAbilitiesTab(nested){
   const c = state.character;
   const futureFeatures = FEATURE_TABLE.filter(f => f.level > c.level);
+  const loreSpells = state.knowledgeLog.filter(k=>k.category==='spell');
   return `
     ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Abilities</h2>`}
     <div class="subhead" style="margin-top:0;">Known Attacks</div>
@@ -2029,6 +2022,15 @@ function renderAbilitiesTab(nested){
         <div class="ref-card" style="opacity:0.65; cursor:pointer;" onclick="openAbilityInfo('future', ${i})">
           <div class="rc-name">🔒 ${escHtml(f.type==='new_attack' ? f.attack.name : f.type==='new_skill' ? f.skill.name : f.name+' (upgrade)')}</div>
           <div class="rc-meta">Unlocks at Level ${f.level} · tap for details</div>
+        </div>
+      `).join('')}
+    ` : ''}
+    ${loreSpells.length ? `
+      <div class="subhead">Spells Heard Of</div>
+      ${loreSpells.map(k=>`
+        <div class="ref-card" style="cursor:pointer;" onclick='openLoreInfoByName(${escAttr(JSON.stringify(k.name))}, "spell")'>
+          <div class="rc-name">${escHtml(k.name)} <span style="font-size:10px; color:var(--brass); opacity:0.85;">(heard of)</span></div>
+          <div class="rc-meta">${k.sources.length} source${k.sources.length>1?'s':''} · tap for details</div>
         </div>
       `).join('')}
     ` : ''}
