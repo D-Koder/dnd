@@ -324,6 +324,7 @@ function createDefaultState(){
     lastDeathSaveRoll: null, // most recent death save d20 result, shown in the modal so the player can see it
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0, statusEffects:[], enemyAC:10, enemyAttackBonus:0, enemyDamageDie:'d6', enemyDamageType:'physical' }, // statusEffects: [{name, icon, turnsLeft}] — lingering ailments like fire/poison, DM-narrated damage, app just displays them. enemy* fields set once when combat starts, persist turn to turn — hit/miss/damage from here on is real code, not AI judgment.
     creatureLog: [], // [{name, location, tier, hp, ac, attackBonus, damageDie, damageType, description, lootNotes, firstEncountered}] — reused for consistency when a creature type reappears
+    knowledgeLog: [], // [{name, category:'spell'|'creature', knownInfo, sources:[], firstLearned, lastUpdated}] — partial narrative knowledge, not exact combat data
     chat: [],
     booting: true,
     lastOptions: [],
@@ -332,7 +333,7 @@ function createDefaultState(){
     oocMode: false,
     tab: 'chat',
     bestiary: { type:'humanoid', results:[], status:'' },
-    library: { section:'bestiary' }, // 'bestiary' | 'spells' — which sub-view Library tab shows
+    library: { section:'monsters' }, // 'monsters' | 'abilities' | 'conditions' — which sub-view Library tab shows
     quests: { main:[], side:[], small:[], unique:[], nextOrder:1 }, // each entry: {title, desc, status:'active'|'complete', pinned:false, order:N}
     pendingQuestOverflow: null, // { category:'side'|'small', newQuest:{title,desc}, evictCandidate:{...} } — composer shows a confirm/reject prompt
     pendingPayment: null, // { amount, reason } — every spend is held here until the player explicitly approves it
@@ -1173,6 +1174,9 @@ function renderModal(){
   if(m.kind==='dice') return renderDiceModal(m);
   if(m.kind==='item') return renderItemModal(m);
   if(m.kind==='retrieve') return renderRetrieveModal(m);
+  if(m.kind==='monster-info') return renderMonsterInfoModal(m);
+  if(m.kind==='lore-info') return renderLoreInfoModal(m);
+  if(m.kind==='ability-info') return renderAbilityInfoModal(m);
   if(m.kind==='edit') return renderEditModal();
   if(m.kind==='preview') return renderPreviewModal(m);
   if(m.kind==='reset-confirm') return renderResetConfirmModal();
@@ -1256,22 +1260,35 @@ function armorClass(){ return 10 + abilityMod(state.character.stats.dex) + (stat
 // so HP itself is a fair proxy for "how tough was this fight"), with real d4 variance so it's
 // not a flat predictable number every time. Item-loot chance scales the same way, capped at
 // 70% so even a genuinely tough fight doesn't guarantee a drop.
-function calcLootCoins(maxHp){
-  const base = Math.max(1, Math.round(maxHp * 0.4));
-  const variance = rollDie(4) - 1; // 0-3 bonus, real dice
-  return base + variance;
+// Loot formula: coins now come directly from the creature's actual tier (not an HP proxy),
+// scaled by player level the same way enemy stats themselves scale — a "boss" always pays out
+// meaningfully more than a "lower", regardless of how its HP happened to roll. Real dice range
+// per tier, not a flat number.
+const LOOT_COIN_RANGES = { lower:[2,5], mid:[5,10], upper:[10,20], elite:[20,40], boss:[40,80] };
+function inferTierFromHp(hp){
+  if(hp <= 8) return 'lower';
+  if(hp <= 15) return 'mid';
+  if(hp <= 30) return 'upper';
+  if(hp <= 50) return 'elite';
+  return 'boss';
+}
+function calcLootCoins(tier, level){
+  const range = LOOT_COIN_RANGES[tier] || LOOT_COIN_RANGES.lower;
+  const mult = 1 + (Math.max(1, level || 1) - 1) * 0.3;
+  return Math.max(1, Math.round(rollInRange(range[0], range[1]) * mult));
 }
 function calcLootChancePct(maxHp){ return Math.min(70, 15 + maxHp * 1.5); }
 function rollLootChance(maxHp){ return (Math.random() * 100) < calcLootChancePct(maxHp); }
 function applyLootOnDefeat(creatureName, maxHp){
   const c = state.character;
-  const coins = calcLootCoins(maxHp || 8);
+  const logged = state.creatureLog.find(cr => cr.name === creatureName);
+  const tier = logged ? logged.tier : inferTierFromHp(maxHp || 8);
+  const coins = calcLootCoins(tier, c.level);
   c.coins += coins;
-  state.chat.push({ type:'note', text:`🪙 +${coins} coils looted from ${creatureName || 'the defeated enemy'} (now ${c.coins})` });
+  state.chat.push({ type:'note', text:`🪙 +${coins} coils looted from ${creatureName || 'the defeated enemy'} (${tier} tier, now ${c.coins})` });
   const gotItemLoot = rollLootChance(maxHp || 8);
   let autoItem = null;
   if(gotItemLoot){
-    const logged = state.creatureLog.find(cr => cr.name === creatureName);
     if(logged && logged.lootTable && logged.lootTable.length){
       // Established loot table — weighted random pick, fully automatic, no AI round-trip needed.
       const totalWeight = logged.lootTable.reduce((sum, it) => sum + (it.weight || 1), 0);
@@ -1905,13 +1922,167 @@ const CONDITIONS_DATA = [
 function renderLibraryTab(){
   return `
     <h2>${glyph('tab-icon-inline')} Library</h2>
-    <div class="ref-row" style="margin-bottom:16px;">
-      <button class="pill-btn ${state.library.section==='bestiary'?'':'btn-secondary'}" style="${state.library.section==='bestiary'?'':'background:transparent;'}" onclick="setLibrarySection('bestiary')">Bestiary</button>
-      <button class="pill-btn ${state.library.section==='spells'?'':'btn-secondary'}" style="${state.library.section==='spells'?'':'background:transparent;'}" onclick="setLibrarySection('spells')">Spells</button>
+    <div class="ref-row" style="margin-bottom:16px; flex-wrap:wrap;">
+      <button class="pill-btn ${state.library.section==='monsters'?'':'btn-secondary'}" style="${state.library.section==='monsters'?'':'background:transparent;'}" onclick="setLibrarySection('monsters')">Encountered Monsters</button>
+      <button class="pill-btn ${state.library.section==='abilities'?'':'btn-secondary'}" style="${state.library.section==='abilities'?'':'background:transparent;'}" onclick="setLibrarySection('abilities')">Abilities</button>
+      <button class="pill-btn ${state.library.section==='lore'?'':'btn-secondary'}" style="${state.library.section==='lore'?'':'background:transparent;'}" onclick="setLibrarySection('lore')">Lore</button>
       <button class="pill-btn ${state.library.section==='conditions'?'':'btn-secondary'}" style="${state.library.section==='conditions'?'':'background:transparent;'}" onclick="setLibrarySection('conditions')">Conditions</button>
     </div>
-    ${state.library.section==='bestiary' ? renderBestiaryTab(true) : state.library.section==='spells' ? renderSpellsTab(true) : renderConditionsLibrary()}
+    ${state.library.section==='abilities' ? renderAbilitiesTab(true) : state.library.section==='lore' ? renderLoreTab(true) : state.library.section==='conditions' ? renderConditionsLibrary() : renderEncounteredMonstersTab(true)}
   `;
+}
+function renderLoreTab(nested){
+  const log = state.knowledgeLog;
+  const spells = log.filter(k=>k.category==='spell');
+  const creatures = log.filter(k=>k.category==='creature');
+  const loreCard = (k,i) => `
+    <div class="ref-card" style="cursor:pointer;" onclick="openLoreInfo(${i})">
+      <div class="rc-name">${escHtml(k.name)}</div>
+      <div class="rc-meta">${k.sources.length} source${k.sources.length>1?'s':''} · tap for details</div>
+    </div>`;
+  return `
+    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Lore</h2>`}
+    <div class="flavor" style="margin-bottom:10px;">What Raken actually knows or has heard about — not exact combat data, just what's actually been learned and how.</div>
+    <div class="subhead" style="margin-top:0;">Spells</div>
+    ${spells.length ? spells.map((k)=>loreCard(k, log.indexOf(k))).join('') : '<div class="msg-note">Nothing heard of yet.</div>'}
+    <div class="subhead">Creatures</div>
+    ${creatures.length ? creatures.map((k)=>loreCard(k, log.indexOf(k))).join('') : '<div class="msg-note">Nothing heard of yet.</div>'}
+  `;
+}
+function openLoreInfo(i){
+  state.modal = { kind:'lore-info', entry: state.knowledgeLog[i] };
+  render();
+}
+function renderLoreInfoModal(m){
+  const k = m.entry;
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>${escHtml(k.name)}</h3>
+      <div class="flavor">${k.category === 'spell' ? 'Spell' : 'Creature'} · first heard: ${escHtml(k.firstLearned)}${k.lastUpdated !== k.firstLearned ? ` · updated: ${escHtml(k.lastUpdated)}` : ''}</div>
+      <div class="rc-meta" style="margin-top:10px; line-height:1.7;">${escHtml(k.knownInfo)}</div>
+      <div style="margin-top:12px;">
+        <div class="rc-name" style="font-size:11px;">How this was learned</div>
+        ${k.sources.map(s=>`<div class="rc-meta" style="margin-top:4px;">• ${escHtml(s)}</div>`).join('')}
+      </div>
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+    </div>
+  </div>`;
+}
+function renderEncounteredMonstersTab(nested){
+  const log = state.creatureLog;
+  return `
+    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Encountered Monsters</h2>`}
+    ${log.length ? log.map((cr,i)=>`
+      <div class="ref-card" style="cursor:pointer;" onclick="openMonsterInfo(${i})">
+        <div class="rc-name">${escHtml(cr.name)}</div>
+        <div class="rc-meta">${escHtml(cr.tier)} tier · ${escHtml(cr.location)} · tap for details</div>
+      </div>
+    `).join('') : '<div class="msg-note">No monsters encountered yet — they\'ll appear here as you fight them.</div>'}
+  `;
+}
+function openMonsterInfo(i){
+  state.modal = { kind:'monster-info', creature: state.creatureLog[i] };
+  render();
+}
+function renderMonsterInfoModal(m){
+  const cr = m.creature;
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet" style="max-height:80vh; overflow-y:auto;">
+      <h3>${escHtml(cr.name)}</h3>
+      <div class="flavor">${escHtml(cr.tier)} tier · ${escHtml(cr.location)}</div>
+      <div class="ref-row" style="flex-wrap:wrap; margin:10px 0;">
+        <div class="ref-card" style="flex:1; min-width:70px; text-align:center; margin-bottom:0;"><div class="rc-name">HP</div><div style="font-size:18px; color:var(--brass);">${cr.hp}</div></div>
+        <div class="ref-card" style="flex:1; min-width:70px; text-align:center; margin-bottom:0;"><div class="rc-name">AC</div><div style="font-size:18px; color:var(--brass);">${cr.ac}</div></div>
+        <div class="ref-card" style="flex:1; min-width:70px; text-align:center; margin-bottom:0;"><div class="rc-name">Attack</div><div style="font-size:18px; color:var(--brass);">+${cr.attackBonus}</div></div>
+        <div class="ref-card" style="flex:1; min-width:80px; text-align:center; margin-bottom:0;"><div class="rc-name">Damage</div><div style="font-size:14px; color:var(--brass);">${escHtml(cr.damageDie)} ${escHtml(cr.damageType)}</div></div>
+      </div>
+      <div class="rc-meta" style="line-height:1.7;">${escHtml(cr.description)}</div>
+      ${cr.onHitCondition ? `<div class="rc-meta" style="margin-top:10px; color:var(--danger);">⚠️ On hit: ${escHtml(cr.onHitCondition.condition)} (${cr.onHitCondition.chancePct}% chance)</div>` : ''}
+      ${cr.lootNotes ? `<div class="rc-meta" style="margin-top:10px;">🎁 ${escHtml(cr.lootNotes)}</div>` : ''}
+      ${(cr.lootTable && cr.lootTable.length) ? `<div style="margin-top:10px;"><div class="rc-name" style="font-size:11px;">Loot Table</div>${cr.lootTable.map(it=>`<div class="rc-meta" style="margin-top:2px;">${escHtml(it.name)} (weight ${it.weight}) — ${escHtml(it.desc)}</div>`).join('')}</div>` : ''}
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+    </div>
+  </div>`;
+}
+function renderAbilitiesTab(nested){
+  const c = state.character;
+  const futureFeatures = FEATURE_TABLE.filter(f => f.level > c.level);
+  return `
+    ${nested ? '' : `<h2>${glyph('tab-icon-inline')} Abilities</h2>`}
+    <div class="subhead" style="margin-top:0;">Known Attacks</div>
+    ${c.attacks.map((a,i)=>`
+      <div class="ref-card" style="cursor:pointer;" onclick="openAbilityInfo('attack', ${i})">
+        <div class="rc-name">${escHtml(a.name)}</div>
+        <div class="rc-meta">${escHtml(a.type)} · ${STAT_LABELS[a.stat]} · tap for details</div>
+      </div>
+    `).join('')}
+    <div class="subhead">Known Skills</div>
+    ${c.skills.map((s,i)=>`
+      <div class="ref-card" style="cursor:pointer;" onclick="openAbilityInfo('skill', ${i})">
+        <div class="rc-name">${escHtml(s.name)} ${s.proficient?'<span style="color:var(--teal); font-size:11px;">(proficient)</span>':''}</div>
+        <div class="rc-meta">${STAT_LABELS[s.stat]} · tap for details</div>
+      </div>
+    `).join('')}
+    ${futureFeatures.length ? `
+      <div class="subhead">Future Unlocks</div>
+      ${futureFeatures.map((f,i)=>`
+        <div class="ref-card" style="opacity:0.65; cursor:pointer;" onclick="openAbilityInfo('future', ${i})">
+          <div class="rc-name">🔒 ${escHtml(f.type==='new_attack' ? f.attack.name : f.type==='new_skill' ? f.skill.name : f.name+' (upgrade)')}</div>
+          <div class="rc-meta">Unlocks at Level ${f.level} · tap for details</div>
+        </div>
+      `).join('')}
+    ` : ''}
+  `;
+}
+function openAbilityInfo(kind, i){
+  let item;
+  if(kind==='attack') item = { kind:'attack', data: state.character.attacks[i] };
+  else if(kind==='skill') item = { kind:'skill', data: state.character.skills[i] };
+  else {
+    const futureFeatures = FEATURE_TABLE.filter(f => f.level > state.character.level);
+    item = { kind:'future', data: futureFeatures[i] };
+  }
+  state.modal = { kind:'ability-info', item };
+  render();
+}
+function renderAbilityInfoModal(m){
+  const item = m.item;
+  if(item.kind==='attack'){
+    const a = item.data;
+    return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+      <div class="sheet">
+        <h3>${escHtml(a.name)}</h3>
+        <div class="flavor">${escHtml(a.type)}, ${STAT_LABELS[a.stat]}</div>
+        <div class="rc-meta" style="margin-top:8px;">Damage: ${escHtml(a.damageDie)} + mod, ${escHtml(a.damageType)}${a.resourceCost?` · costs ${a.resourceCost.magicReserve} Magic Reserve`:''}</div>
+        <div class="rc-meta" style="margin-top:8px;">${escHtml(a.desc)}</div>
+        <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+      </div>
+    </div>`;
+  }
+  if(item.kind==='skill'){
+    const s = item.data;
+    return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+      <div class="sheet">
+        <h3>${escHtml(s.name)}</h3>
+        <div class="flavor">${STAT_LABELS[s.stat]} · ${s.proficient?'Proficient':'Untrained'}</div>
+        <div class="rc-meta" style="margin-top:8px;">${escHtml(s.desc)}</div>
+        <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+      </div>
+    </div>`;
+  }
+  const f = item.data;
+  let title, desc;
+  if(f.type==='new_attack'){ title = f.attack.name; desc = `New attack — ${f.attack.type}, ${STAT_LABELS[f.attack.stat]}, ${f.attack.damageDie} ${f.attack.damageType}. ${f.attack.desc}`; }
+  else if(f.type==='new_skill'){ title = f.skill.name; desc = `New skill — ${STAT_LABELS[f.skill.stat]}. ${f.skill.desc}`; }
+  else { title = `${f.name} upgrade`; desc = `Damage upgrades to ${f.newDie}.`; }
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet">
+      <h3>🔒 ${escHtml(title)}</h3>
+      <div class="flavor">Unlocks at Level ${f.level}</div>
+      <div class="rc-meta" style="margin-top:8px;">${escHtml(desc)}</div>
+      <div class="sheet-actions"><button class="btn-primary" onclick="closeModal()">Close</button></div>
+    </div>
+  </div>`;
 }
 function renderConditionsLibrary(){
   return CONDITIONS_DATA.map(c=>`
@@ -2415,6 +2586,7 @@ Combat engine: when combat starts, set combat.enemy_name, enemy_tier, and enemy_
 Monster tiers (pick the category that fits the story moment — that's the creative call; the app rolls every actual number within it, scaled to the player's current level): lower, mid, upper, elite, boss — roughly trivial pest, minor threat, real fight, dangerous, and boss-tier respectively. A level 1 party should mostly face lower/mid, occasional upper; scale up which tiers you reach for as the player levels.
 Loot on defeat: the app automatically loots coins from any defeated enemy the moment it's actually defeated (Attack button or freeform combat) — real dice, scaled to the enemy's max HP, you don't compute or award this yourself. Item loot is a separate automatic chance roll — if the creature has a logged loot_table, the app picks a specific item from it by weighted odds on its own; if not (a brand new creature with no table yet), you'll see "LOOT OWED" in context and should narrate + add a fitting item yourself that one time, then log a loot_table for it going forward so future kills are automatic too. Don't invent additional coin or item rewards beyond what the app actually grants.
 Creature log & conditions: the app automatically checks the creature log for you — you never need to manually look up whether a creature already exists. The first time a genuinely new creature type appears, log it via creature_log_add with its name, location, tier, hp/ac/attack_bonus/damage_die/damage_type (match what actually got rolled, shown in context), a description, loot_notes, and optionally on_hit_condition ({condition, chance_pct}) if this creature should have a real chance to inflict a condition on a hit (a venomous creature might be {"Poisoned", 30}) — that chance is then rolled automatically by the app on every future hit from this creature, not decided narratively in the moment. Also optionally set loot_table (a list of {name, desc, weight}) so future kills auto-select a specific item instead of needing you to narrate one every time.
+Knowledge log (knowledge_log_add): distinct from the creature log above — this is for partial, narrative knowledge, not exact combat data. Whenever the player learns *anything* about a spell or creature they haven't fully fought/mastered — witnesses it in action, hears about it from an NPC, reads about it, catches a rumor — log it with {name, category:"spell"|"creature", known_info, source}. known_info should be scoped to exactly what the player would actually know at that point, not omniscient detail (if they only overheard a rumor, known_info should read like a rumor, not a stat block). source describes how they learned it (e.g. "overheard from a dockworker", "watched it attack Bex", "read in a torn journal page"). If the player learns more about something already logged, add another entry with the same name+category — the app replaces known_info with your latest, fuller account and keeps a running list of every source, it doesn't just overwrite silently.
 Attacks & skills (for anything outside that structured flow — freeform actions, skill checks, non-combat attack description): the character sheet in your context lists named attacks (type, stat, damage die, damage type, resource cost) and named skills (proficient or not). When the player describes using one in freeform text rather than the Attack button, set requires_roll.stat to that attack/skill's stat, and requires_roll.skill for a skill (attacks don't use this field). For an attack that costs Magic Reserve, set character_status.spend_magic_reserve/spend_magic_reason — the app gates this for approval and fizzles it automatically if unaffordable, don't gate it yourself. On a hit, damage always comes from an actual resolved roll (never a number you simply state) — the damage die + the same ability modifier, applied as a negative character_status.hp_delta to whatever's being hit. This "always roll it, never narrate a number" rule applies universally, including ongoing status-effect damage (fire, poison, etc.) and hazard/environmental damage.
 Damage causality: the player only takes damage from an enemy that is both still alive (combat.enemy_hp above 0) and actually attacking that turn — never apply a negative hp_delta to the player from an enemy that was already defeated in a prior turn, and never let combat.active go false in the same response that also damages the player from that same fight, unless the narration clearly explains a distinct cause (a trap, a separate hazard) rather than the "defeated" enemy itself.
 Turn order in combat: when the player uses the Attack button, the enemy's counter-attack (if it survives) now resolves automatically in the same sequence — you'll get both halves of the exchange in one summary ("attacked with X: HIT... Then [enemy] counter-attacked: HIT/MISS...") in a single response. Narrate them as two clearly distinct beats within that response, not blended into one continuous paragraph: first describe the player's action and its outcome in full, then a clear transition, then the enemy's counter-attack as its own separate second part — the reader should be able to tell exactly where the player's turn ends and the enemy's begins, even though it's all one response. For freeform combat (typed actions, not the Attack button), keep alternating strictly — the player's entire turn must fully resolve before the enemy's turn is narrated, never compressed into the same response as the player's own damage roll resolving.
@@ -2510,6 +2682,9 @@ ${state.pendingLootRoll ? `\nLOOT OWED: an item-loot chance succeeded when ${sta
 CREATURE LOG (check here first for any creature that might recur — reuse its exact stats via combat.enemy_ac/enemy_attack_bonus/enemy_damage_die/enemy_damage_type rather than inventing new numbers; log a NEW creature type the first time it appears via creature_log_add):
 ${state.creatureLog.length ? state.creatureLog.map(cr=>`${cr.name} (${cr.location}, ${cr.tier}) — HP ${cr.hp}, AC ${cr.ac}, atk +${cr.attackBonus}, ${cr.damageDie} ${cr.damageType}`).join(' | ') : '(none logged yet)'}
 
+KNOWLEDGE LOG (partial narrative knowledge already learned — check before logging a duplicate; add to an existing entry via knowledge_log_add with the same name+category when the player learns more):
+${state.knowledgeLog.length ? state.knowledgeLog.map(k=>`${k.name} [${k.category}]: ${k.knownInfo}`).join(' | ') : '(none logged yet)'}
+
 SETTINGS:
 Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
 Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.
@@ -2591,6 +2766,7 @@ const DM_TOOL_SCHEMA = {
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"}, stat:{type:["string","null"],enum:["str","dex","con","int","wis","cha",null]}, skill:{type:["string","null"]}, save:{type:"boolean"}, advantage:{type:"boolean"}, disadvantage:{type:"boolean"} } },
       requires_hidden_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, bonus:{type:"number"}, vs_ac:{type:["number","null"]}, reason:{type:"string"}, then_damage:{type:["object","null"],properties:{die:{type:"string"},bonus:{type:"number"},type:{type:"string"}}} } },
       creature_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, location:{type:"string"}, tier:{type:"string"}, hp:{type:"number"}, ac:{type:"number"}, attack_bonus:{type:"number"}, damage_die:{type:"string"}, damage_type:{type:"string"}, description:{type:"string"}, loot_notes:{type:"string"}, on_hit_condition:{type:["object","null"],properties:{condition:{type:"string"},chance_pct:{type:"number"}}}, loot_table:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, weight:{type:"number"} }, required:["name","desc","weight"] }} }, required:["name","location","tier","hp","ac","attack_bonus","damage_die","damage_type","description","loot_notes","on_hit_condition","loot_table"] }},
+      knowledge_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, category:{type:"string",enum:["spell","creature"]}, known_info:{type:"string"}, source:{type:"string"} }, required:["name","category","known_info","source"] }},
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
@@ -3337,6 +3513,21 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     else state.creatureLog.push(record);
   });
 
+  (d.knowledge_log_add||[]).forEach(entry=>{
+    const existingIdx = state.knowledgeLog.findIndex(k => k.name===entry.name && k.category===entry.category);
+    const now = state.sessionMeta.whereWeAre;
+    if(existingIdx>=0){
+      const existing = state.knowledgeLog[existingIdx];
+      existing.knownInfo = entry.known_info; // the DM gives the fuller, current picture each time — not appended, replaced
+      if(!existing.sources.includes(entry.source)) existing.sources.push(entry.source);
+      existing.lastUpdated = now;
+      state.chat.push({ type:'note', text:`📖 Knowledge updated: ${entry.name}` });
+    } else {
+      state.knowledgeLog.push({ name: entry.name, category: entry.category, knownInfo: entry.known_info, sources: [entry.source], firstLearned: now, lastUpdated: now });
+      state.chat.push({ type:'note', text:`📖 New knowledge logged: ${entry.name}` });
+    }
+  });
+
   if(d.item_found){
     if(!state.character.itemInfo) state.character.itemInfo = {};
     state.character.itemInfo[d.item_found.name] = { desc: d.item_found.desc || '', damage: d.item_found.damage||null, armor: (d.item_found.armor!=null?d.item_found.armor:null), statBonus: d.item_found.stat_bonus||null };
@@ -3646,7 +3837,7 @@ function parseCreaturesMd(text){
     const nameMatch = line.match(/^###\s+(.+)$/);
     if(nameMatch){
       if(current) creatures.push(current);
-      current = { name: nameMatch[1].trim(), location: currentLocation || 'Unknown', tier:'', hp:0, ac:0, attackBonus:0, damageDie:'d6', damageType:'physical', description:'', lootNotes:'', firstEncountered:'' };
+      current = { name: nameMatch[1].trim(), location: currentLocation || 'Unknown', tier:'', hp:0, ac:0, attackBonus:0, damageDie:'d6', damageType:'physical', description:'', lootNotes:'', onHitCondition:null, lootTable:[], firstEncountered:'' };
       return;
     }
     if(!current) return;
@@ -3658,6 +3849,16 @@ function parseCreaturesMd(text){
     if(m = line.match(/^-\s*\*\*Damage:\*\*\s*(\S+)\s+(.+)$/i)){ current.damageDie = m[1].trim(); current.damageType = m[2].trim(); return; }
     if(m = line.match(/^-\s*\*\*Description:\*\*\s*(.+)$/i)){ current.description = m[1].trim(); return; }
     if(m = line.match(/^-\s*\*\*Loot Notes:\*\*\s*(.+)$/i)){ current.lootNotes = m[1].trim(); return; }
+    if(m = line.match(/^-\s*\*\*On-Hit Condition:\*\*\s*(.+)$/i)){
+      const val = m[1].trim();
+      const cm = val.match(/^(.+?)\s*\((\d+)%/);
+      current.onHitCondition = cm ? { condition: cm[1].trim(), chancePct: parseInt(cm[2],10) } : null;
+      return;
+    }
+    if(m = line.match(/^\s+-\s*(.+?)\s*\(weight\s*(\d+)\)\s*—\s*(.+)$/i)){
+      current.lootTable.push({ name: m[1].trim(), weight: parseInt(m[2],10), desc: m[3].trim() });
+      return;
+    }
     if(m = line.match(/^-\s*\*\*First Encountered:\*\*\s*(.+)$/i)){ current.firstEncountered = m[1].trim(); return; }
   });
   if(current) creatures.push(current);
@@ -3836,6 +4037,9 @@ ${byLocation[loc].map(cr=>`### ${cr.name}
 - **Damage:** ${cr.damageDie} ${cr.damageType}
 - **Description:** ${cr.description}
 - **Loot Notes:** ${cr.lootNotes}
+- **On-Hit Condition:** ${cr.onHitCondition ? `${cr.onHitCondition.condition} (${cr.onHitCondition.chancePct}% chance)` : '(none)'}
+- **Loot Table:**
+${(cr.lootTable && cr.lootTable.length) ? cr.lootTable.map(it=>`  - ${it.name} (weight ${it.weight}) — ${it.desc}`).join('\n') : '  - (none established yet)'}
 - **First Encountered:** ${cr.firstEncountered}
 `).join('\n')}`).join('\n') : '*(none logged yet)*'}
 `;
