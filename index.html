@@ -630,7 +630,7 @@ async function loadSaveFilesFromDisk(){
   ]);
   let found = false;
   if(char){ applyCharacterSheetParse(parseCharacterSheetMd(char)); found = true; }
-  if(wb){ Object.assign(state.worldBible, parseWorldBibleMd(wb)); found = true; }
+  if(wb){ const parsedWb = parseWorldBibleMd(wb); const wbThreads = parsedWb.openThreads; delete parsedWb.openThreads; Object.assign(state.worldBible, parsedWb); if(wbThreads && wbThreads.length) state.sessionMeta.openThreads = wbThreads; found = true; }
   if(party){ Object.assign(state.party, parsePartyMd(party)); found = true; }
   if(creatures){ const parsedCreatures = parseCreaturesMd(creatures); if(parsedCreatures.length){ state.creatureLog = parsedCreatures; found = true; } }
   if(log){
@@ -2669,6 +2669,7 @@ Where we are right now: ${state.sessionMeta.whereWeAre || '(session just startin
 Current quest/hook: ${state.character.quest}
 Recent events: ${state.sessionMeta.recentEvents.slice(-8).join(' | ') || '(none yet)'}
 Open threads: ${state.sessionMeta.openThreads.join(' | ') || '(none yet)'}
+save_worthy entries only ever get added, never edited or removed — if something you're logging now supersedes or completes an earlier entry (a "pending" thing that just resolved, say), word the new entry so it's clear on its own that this is the current, true state, rather than leaving an old entry sitting there looking unresolved or contradicted.
 
 QUESTS (do not exceed 1-2 active Main Quests — check the count below before adding another; capacity for Side/Small is app-managed, don't worry about their limits). Goal checkboxes shown as [x]/[ ]:
 Main (${state.quests.main.filter(q=>q.status!=='complete').length} active): ${state.quests.main.map(q=>questContextLine(q)).join(' | ') || '(none yet)'}
@@ -3743,6 +3744,7 @@ function parseWorldBibleMd(text){
     npcs: extractListItems(extractSection(text, 'Key NPCs')),
     map: extractListItems(extractSection(text, 'Map Notes')),
     artifacts: extractListItems(extractSection(text, 'Notable Artifacts')),
+    openThreads: extractListItems(extractSection(text, 'Ongoing Threads\\s*/\\s*Mysteries')), // routed to sessionMeta by the caller, not part of worldBible itself
   };
   if(settlements.length) out.settlements = settlements;
   if(currency && !/^\(not established/i.test(currency)) out.currency = currency;
@@ -3878,7 +3880,7 @@ function parseSessionLogMd(text){
     recentEvents: extractListItems(extractSection(text, 'Recent Events')).length
       ? extractListItems(extractSection(text, 'Recent Events'))
       : extractListItems(extractSection(text, 'Save-Worthy Moments')),
-    openThreads: extractListItems(extractSection(text, 'Open Threads')),
+    // openThreads is no longer parsed here — world_bible.md → Ongoing Threads / Mysteries is the single source of truth for this now.
   };
   if(sessionMatch) out.sessionNumber = parseInt(sessionMatch[1], 10);
   if(bexStatus) out.partyBexStatus = bexStatus[1].trim();
@@ -3907,7 +3909,7 @@ async function handleImportFiles(event){
     if(!kind) continue;
     const text = await file.text();
     if(kind === 'character_sheet') applyCharacterSheetParse(parseCharacterSheetMd(text));
-    else if(kind === 'world_bible') Object.assign(state.worldBible, parseWorldBibleMd(text));
+    else if(kind === 'world_bible'){ const parsedWb = parseWorldBibleMd(text); const wbThreads = parsedWb.openThreads; delete parsedWb.openThreads; Object.assign(state.worldBible, parsedWb); if(wbThreads && wbThreads.length) state.sessionMeta.openThreads = wbThreads; }
     else if(kind === 'party') Object.assign(state.party, parsePartyMd(text));
     else if(kind === 'session_log'){
       const parsed = parseSessionLogMd(text);
@@ -4177,12 +4179,12 @@ ${state.party.thrum}
   }
   if(kind === 'session_log'){
     const transcript = state.chat.map(m=>{
-      if(m.type==='dm') return `**DM:** ${m.text}` + (m.companions||[]).map(cc=>`\n> **${cc.name}:** ${cc.line}`).join('');
+      if(m.type==='dm' && !m.isOOC) return `**DM:** ${m.text}` + (m.companions||[]).map(cc=>`\n> **${cc.name}:** ${cc.line}`).join('');
       if(m.type==='player') return `**You:** ${m.text}`;
       if(m.type==='roll') return `_${m.text}_`;
       if(m.type==='note') return `_${m.text}_`;
       return '';
-    }).join('\n\n');
+    }).filter(s=>s).join('\n\n');
     const today = new Date().toISOString().slice(0,10);
     return `# Session Log (SAVE STATE — source of truth for "where we are")
 
@@ -4199,7 +4201,7 @@ ${state.sessionMeta.currentHook || c.quest}
 ${state.sessionMeta.recentEvents.map(s=>'- '+s).join('\n') || '- (none yet)'}
 
 ## Open Threads
-${state.sessionMeta.openThreads.map(s=>'- '+s).join('\n') || '- (none yet)'}
+*Full list lives in world_bible.md → Ongoing Threads / Mysteries — not duplicated here.*
 
 ## Active Quests
 ### Main Quest
