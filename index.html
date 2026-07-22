@@ -455,6 +455,45 @@ function proficiencyBonusForLevel(level){
   return 2;
 }
 function abilityMod(score){ return Math.floor((score-10)/2); }
+// XP is tier x level, not an AI-picked number — the AI only chooses which tier fits, code
+// does the arithmetic. Scales with level so the same category of accomplishment is worth
+// more as the character gets stronger, roughly tracking how much steeper the real 5e curve gets.
+// XP is a fraction of the real gap to the NEXT level, not a flat number — this keeps pacing
+// consistent across the whole 1-20 curve (which itself grows steeply, not linearly) instead of
+// being wildly generous early on. Unique Event defaults to the same fraction as Hard unless the
+// DM deliberately specifies a multiplier for something genuinely exceptional.
+const XP_TIER_FRACTIONS = { low:0.03, medium:0.07, hard:0.12, main_quest:0.20, unique_event:0.12 };
+function calcXpForTier(tier, level, multiplier){
+  const lvl = Math.max(1, Math.min(20, level));
+  if(lvl >= 20) return 0; // max level — nowhere left to put XP
+  const gapToNext = xpForLevel(lvl + 1) - xpForLevel(lvl);
+  const fraction = XP_TIER_FRACTIONS[tier] || 0;
+  const mult = (multiplier && multiplier > 0) ? Math.min(3, multiplier) : 1; // capped so an "exceptional" event can't blow the curve open
+  return Math.max(1, Math.round(fraction * gapToNext * mult));
+}
+// Enemy tiers — base ranges at level 1, scaled up with player level so the same tier stays
+// meaningfully threatening as the character grows. The AI only ever picks which tier fits;
+// every actual number (HP, AC, attack bonus, damage die) is rolled here, not chosen by it.
+const ENEMY_TIERS = {
+  lower:  { hp:[4,8],   ac:[8,10],  atk:[0,1], dice:['d4'] },
+  mid:    { hp:[8,15],  ac:[10,12], atk:[1,2], dice:['d4','d6'] },
+  upper:  { hp:[15,30], ac:[12,14], atk:[2,4], dice:['d6','d8'] },
+  elite:  { hp:[30,50], ac:[14,16], atk:[4,6], dice:['d8','d10'] },
+  boss:   { hp:[50,100],ac:[16,18], atk:[6,8], dice:['d10','d12'] },
+};
+function rollInRange(min, max){ return min + Math.floor(Math.random() * (max - min + 1)); }
+function rollEnemyStatsForTier(tier, playerLevel){
+  const t = ENEMY_TIERS[tier] || ENEMY_TIERS.lower;
+  const lvl = Math.max(1, playerLevel);
+  const hpMult = 1 + (lvl - 1) * 0.3; // roughly matches how much tougher a fair fight should get per level
+  const acBonus = Math.floor((lvl - 1) / 4); // mirrors real proficiency bonus growth pace
+  const atkBonus = Math.floor((lvl - 1) / 3);
+  const hp = Math.max(1, Math.round(rollInRange(t.hp[0], t.hp[1]) * hpMult));
+  const ac = rollInRange(t.ac[0], t.ac[1]) + acBonus;
+  const attackBonus = rollInRange(t.atk[0], t.atk[1]) + atkBonus;
+  const damageDie = t.dice[Math.floor(Math.random() * t.dice.length)];
+  return { hp, ac, attackBonus, damageDie };
+}
 function applyHpDelta(delta){
   const c = state.character;
   const wasAbove0 = c.hpCurrent > 0;
@@ -1230,10 +1269,29 @@ function applyLootOnDefeat(creatureName, maxHp){
   c.coins += coins;
   state.chat.push({ type:'note', text:`🪙 +${coins} coils looted from ${creatureName || 'the defeated enemy'} (now ${c.coins})` });
   const gotItemLoot = rollLootChance(maxHp || 8);
+  let autoItem = null;
   if(gotItemLoot){
-    state.pendingLootRoll = { creatureName: creatureName || 'the enemy' }; // tells the DM a loot item should be narrated in
+    const logged = state.creatureLog.find(cr => cr.name === creatureName);
+    if(logged && logged.lootTable && logged.lootTable.length){
+      // Established loot table — weighted random pick, fully automatic, no AI round-trip needed.
+      const totalWeight = logged.lootTable.reduce((sum, it) => sum + (it.weight || 1), 0);
+      let r = Math.random() * totalWeight;
+      for(const it of logged.lootTable){ r -= (it.weight || 1); if(r <= 0){ autoItem = it; break; } }
+      if(!autoItem) autoItem = logged.lootTable[logged.lootTable.length - 1];
+      if(c.inventory.includes(autoItem.name) || isEquipped(autoItem.name)){
+        c.itemQty[autoItem.name] = (c.itemQty[autoItem.name] || 1) + 1;
+      } else {
+        c.inventory.push(autoItem.name);
+        c.itemInfo[autoItem.name] = { desc: autoItem.desc || '', damage:null, armor:null, statBonus:null };
+      }
+      state.chat.push({ type:'note', text:`🎒 Looted: ${autoItem.name}` });
+    } else {
+      // No table logged yet for this creature — the AI narrates one this time, and should
+      // establish a loot_table via creature_log_add so future kills are automatic too.
+      state.pendingLootRoll = { creatureName: creatureName || 'the enemy' };
+    }
   }
-  return { coins, gotItemLoot };
+  return { coins, gotItemLoot, autoItem };
 }
 function passivePerception(){ return 10 + abilityMod(state.character.stats.wis); }
 function renderDiceModal(m){
@@ -1522,6 +1580,36 @@ function chooseAttack(name){
   }
   executeAttack(attack);
 }
+function executeEnemyCounterAttack(){
+  // The enemy's turn, fully automatic — no AI decision on whether/when this happens.
+  const c = state.character;
+  const combat = state.combat;
+  if(!combat.active) return null; // already defeated, no counter-attack
+  const roll = rollDie(20);
+  const total = roll + combat.enemyAttackBonus;
+  const playerAC = armorClass();
+  const hit = total >= playerAC;
+  state.chat.push({ type:'roll', text:`🎲 ${combat.creatureName} attacks: ${roll} ${combat.enemyAttackBonus>=0?'+':''}${combat.enemyAttackBonus} = ${total} vs your AC ${playerAC} — ${hit?'HIT':'MISS'}` });
+  let damageTotal = 0, conditionApplied = null;
+  if(hit){
+    const dmgSides = parseInt(combat.enemyDamageDie.slice(1), 10);
+    const dmgRoll = rollDie(dmgSides);
+    damageTotal = Math.max(0, dmgRoll);
+    applyHpDelta(-damageTotal);
+    state.chat.push({ type:'roll', text:`🎲 Damage: ${dmgRoll} ${combat.enemyDamageType} (you: ${c.hpCurrent}/${c.hpMax} HP)` });
+    // Condition chance comes from the creature's own logged data, not narrative judgment —
+    // a venomous creature always has the same real chance to poison you, every single time.
+    const logged = state.creatureLog.find(cr => cr.name === combat.creatureName);
+    if(logged && logged.onHitCondition && logged.onHitCondition.chancePct){
+      if(Math.random() * 100 < logged.onHitCondition.chancePct && !c.conditions.includes(logged.onHitCondition.condition)){
+        c.conditions.push(logged.onHitCondition.condition);
+        conditionApplied = logged.onHitCondition.condition;
+        state.chat.push({ type:'note', text:`⚠️ ${conditionApplied} applied.` });
+      }
+    }
+  }
+  return { hit, total, playerAC, damageTotal, damageType: combat.enemyDamageType, conditionApplied };
+}
 function executeAttack(attack){
   const c = state.character;
   const combat = state.combat;
@@ -1547,10 +1635,14 @@ function executeAttack(attack){
       loot = applyLootOnDefeat(name, maxHp);
     }
   }
+  // If the enemy survived (hit or miss, doesn't matter — a missed swing still uses your turn),
+  // its counter-attack happens automatically right here, no separate AI-decided turn needed.
+  const counter = defeated ? null : executeEnemyCounterAttack();
   persistSaveFiles();
   render();
-  const lootNote = defeated ? ` Looted ${loot.coins} coils.${loot.gotItemLoot ? ' An item loot chance succeeded — narrate an appropriate item drop and add it via inventory_updates.' : ''}` : '';
-  const summary = `(attacked with ${attack.name}: rolled ${total} vs AC ${combat.enemyAC} — ${hit ? `HIT, dealt ${damageTotal} ${attack.damageType} damage${defeated ? `, ${combat.creatureName} defeated.${lootNote}` : `, enemy now ${combat.creatureHp}/${combat.creatureMaxHp} HP`}` : 'MISS'})`;
+  const lootNote = defeated ? ` Looted ${loot.coins} coils.${loot.autoItem ? ` Also automatically looted: ${loot.autoItem.name} (from its established loot table) — just narrate finding it, it's already added.` : loot.gotItemLoot ? ' An item loot chance succeeded but this creature has no loot_table logged yet — narrate an appropriate item drop, add it via inventory_updates, and log a loot_table for it so future kills are automatic.' : ''}` : '';
+  const counterNote = counter ? ` Then ${combat.creatureName} counter-attacked: rolled ${counter.total} vs your AC ${counter.playerAC} — ${counter.hit ? `HIT, dealt ${counter.damageTotal} ${counter.damageType} damage${counter.conditionApplied ? `, inflicting ${counter.conditionApplied}` : ''} (you: ${c.hpCurrent}/${c.hpMax} HP)` : 'MISS'}.` : '';
+  const summary = `(attacked with ${attack.name}: rolled ${total} vs AC ${combat.enemyAC} — ${hit ? `HIT, dealt ${damageTotal} ${attack.damageType} damage${defeated ? `, ${combat.creatureName} defeated.${lootNote}` : `, enemy now ${combat.creatureHp}/${combat.creatureMaxHp} HP`}` : 'MISS'}.${counterNote})`;
   sendAction(summary);
 }
 function openSpellCastModal(){
@@ -2319,13 +2411,13 @@ These are the campaign's save files — read them first and treat them as source
 
 Never resolve dice outcomes yourself. If an action needs a roll (attack, risky action, saving throw), set requires_roll instead of narrating a result, and wait — the actual roll will come back to you in a follow-up message's "resolution" field, already computed. Narrate strictly around that resolution when it arrives.
 requires_roll.stat: for non-magic checks, set this to whichever of the six D&D ability scores (str/dex/con/int/wis/cha) actually fits the action — the app adds that score's real ability modifier plus proficiency bonus to the roll automatically. Str for forcing/breaking/lifting, Dex for precision/stealth/reflexes, Con for enduring/resisting physical strain, Int for reading tech/relics/puzzles, Wis for perception/instinct/staying composed, Cha for social/scheming/presence. Leave it null specifically for magic/grounding-based rolls (the existing water/stone/wet mechanic), which keep working exactly as before.
-Combat engine: when combat starts, set combat.enemy_ac, combat.enemy_attack_bonus, combat.enemy_damage_die, and combat.enemy_damage_type once, alongside enemy_name/hp — pick numbers that fit the creature's threat level (a rat might be AC 10, +1, d4; something dangerous might be AC 14, +4, d8). These persist automatically turn to turn — you don't need to resupply them on later turns unless they should actually change (an enemy getting weaker, buffed, etc). Once set, the player has their own Attack button that resolves their attack roll, hit/miss against your stored AC, damage roll, HP loss, and defeat entirely in code — you'll receive a factual summary afterward ("attacked with Focus Pulse: rolled 14 vs AC 11 — HIT, dealt 5 force damage, enemy now 3/8 HP") to narrate around, not to recompute or second-guess.
-Monster tiers (scale to the player's current level, shown in context — a level 1 party should mostly face Trivial/Weak, occasional Moderate; scale up as the player levels): Trivial (HP 4-8, AC 8-10, atk +0/+1, dmg d4) — Weak (HP 8-15, AC 10-12, atk +1/+2, dmg d4-d6) — Moderate (HP 15-30, AC 12-14, atk +2/+4, dmg d6-d8) — Tough (HP 30-50, AC 14-16, atk +4/+6, dmg d8-d10) — Dangerous (HP 50+, AC 16+, atk +6+, dmg d10+). Use these as a starting point, not a rigid cage — a specific creature can bend a stat for flavor, but the overall tier should still roughly match the player's level so fights stay fair.
-Loot on defeat: the app automatically loots coins from any defeated enemy the moment it's actually defeated (whether via the Attack button or freeform combat) — real dice, scaled to the enemy's max HP, you don't compute or award this yourself. Roughly 40% of max HP in coils plus 0-3 variance (an 8 HP enemy nets ~3-5 coils, a 30 HP enemy ~13-15). Item loot is a separate chance roll (also automatic, scaling with HP, capped around 70%) — when it succeeds you'll see "LOOT OWED" in context; narrate a specific item fitting that creature and add it via inventory_updates.add that same turn. Don't invent additional coin or item rewards for a kill beyond what the app already grants — this is the actual loot, not a suggestion.
-Creature log: check the CREATURE LOG in context before setting a new enemy's stats — if a creature type has appeared before, reuse its exact logged stats instead of inventing new ones, so the same kind of monster is consistent every time it's fought. The first time a genuinely new creature type appears, log it via creature_log_add with its name, location (where it was found), tier, hp/ac/attack_bonus/damage_die/damage_type, a short description, and loot_notes (what it tends to drop thematically, even though the actual coin/chance math is automatic). This becomes creatures.md, a real reusable bestiary file.
+Combat engine: when combat starts, set combat.enemy_name, enemy_tier, and enemy_damage_type — that's it, you don't set exact AC/attack bonus/damage die numbers anymore. The app handles the rest automatically: if this enemy_name matches something already in the creature log, its exact logged stats are reused; if it's genuinely new, real stats get rolled from the tier you picked. You can optionally set enemy_hp/enemy_max_hp for a specific scripted encounter (a named boss with known HP); otherwise leave them null and the app rolls appropriate HP for the tier too. Once set, the player's Attack button resolves their attack roll, hit/miss, damage, AND the enemy's automatic counter-attack (if it survives) entirely in code — you'll receive one combined factual summary covering both halves of the exchange to narrate together, not to recompute or second-guess.
+Monster tiers (pick the category that fits the story moment — that's the creative call; the app rolls every actual number within it, scaled to the player's current level): lower, mid, upper, elite, boss — roughly trivial pest, minor threat, real fight, dangerous, and boss-tier respectively. A level 1 party should mostly face lower/mid, occasional upper; scale up which tiers you reach for as the player levels.
+Loot on defeat: the app automatically loots coins from any defeated enemy the moment it's actually defeated (Attack button or freeform combat) — real dice, scaled to the enemy's max HP, you don't compute or award this yourself. Item loot is a separate automatic chance roll — if the creature has a logged loot_table, the app picks a specific item from it by weighted odds on its own; if not (a brand new creature with no table yet), you'll see "LOOT OWED" in context and should narrate + add a fitting item yourself that one time, then log a loot_table for it going forward so future kills are automatic too. Don't invent additional coin or item rewards beyond what the app actually grants.
+Creature log & conditions: the app automatically checks the creature log for you — you never need to manually look up whether a creature already exists. The first time a genuinely new creature type appears, log it via creature_log_add with its name, location, tier, hp/ac/attack_bonus/damage_die/damage_type (match what actually got rolled, shown in context), a description, loot_notes, and optionally on_hit_condition ({condition, chance_pct}) if this creature should have a real chance to inflict a condition on a hit (a venomous creature might be {"Poisoned", 30}) — that chance is then rolled automatically by the app on every future hit from this creature, not decided narratively in the moment. Also optionally set loot_table (a list of {name, desc, weight}) so future kills auto-select a specific item instead of needing you to narrate one every time.
 Attacks & skills (for anything outside that structured flow — freeform actions, skill checks, non-combat attack description): the character sheet in your context lists named attacks (type, stat, damage die, damage type, resource cost) and named skills (proficient or not). When the player describes using one in freeform text rather than the Attack button, set requires_roll.stat to that attack/skill's stat, and requires_roll.skill for a skill (attacks don't use this field). For an attack that costs Magic Reserve, set character_status.spend_magic_reserve/spend_magic_reason — the app gates this for approval and fizzles it automatically if unaffordable, don't gate it yourself. On a hit, damage always comes from an actual resolved roll (never a number you simply state) — the damage die + the same ability modifier, applied as a negative character_status.hp_delta to whatever's being hit. This "always roll it, never narrate a number" rule applies universally, including ongoing status-effect damage (fire, poison, etc.) and hazard/environmental damage.
 Damage causality: the player only takes damage from an enemy that is both still alive (combat.enemy_hp above 0) and actually attacking that turn — never apply a negative hp_delta to the player from an enemy that was already defeated in a prior turn, and never let combat.active go false in the same response that also damages the player from that same fight, unless the narration clearly explains a distinct cause (a trap, a separate hazard) rather than the "defeated" enemy itself.
-Turn order in combat: strictly alternating, never compressed together. The player's entire turn — their roll(s), the resolution coming back, any resulting damage actually applied — must fully complete before the enemy's turn is narrated at all. Don't have the enemy retaliate, attack, or deal damage in the same response where the player's own damage roll just resolved; that's a second turn happening inside what should still be the player's turn. The enemy's turn is its own separate beat, in a following response, after the player's turn has genuinely finished.
+Turn order in combat: when the player uses the Attack button, the enemy's counter-attack (if it survives) now resolves automatically in the same sequence — you'll get both halves of the exchange in one summary ("attacked with X: HIT... Then [enemy] counter-attacked: HIT/MISS...") in a single response. Narrate them as two clearly distinct beats within that response, not blended into one continuous paragraph: first describe the player's action and its outcome in full, then a clear transition, then the enemy's counter-attack as its own separate second part — the reader should be able to tell exactly where the player's turn ends and the enemy's begins, even though it's all one response. For freeform combat (typed actions, not the Attack button), keep alternating strictly — the player's entire turn must fully resolve before the enemy's turn is narrated, never compressed into the same response as the player's own damage roll resolving.
 Enemy/NPC rolls: use requires_hidden_roll instead of requires_roll for anything the enemy itself rolls (its attack roll against the player's AC, its own damage die) — the player has nothing to tap for the enemy's own actions, but it still needs to be real dice, not a number you state. Give it {die:"d20", bonus: combat.enemy_attack_bonus, vs_ac: the player's current AC from context, reason}. For a full enemy attack in one step, also set then_damage: {die: combat.enemy_damage_die, bonus, type: combat.enemy_damage_type} — if the attack roll hits, the app automatically rolls that damage too and applies it directly to the player's HP, so you don't need a second round-trip just for damage. This resolves immediately and shows the result as a transparent chat note, then automatically continues your turn with the real numbers — you don't need to wait on the player for this one.
 Saving throws vs. checks: when danger is being resisted rather than actively attempted (dodging a blast, resisting fear, shrugging off poison), set requires_roll.save true instead of requires_roll.skill — the app checks save proficiency, not skill proficiency, for the bonus. A bare ability check (stat set, no skill, no save) gets no proficiency bonus at all, same as real D&D — that's correct, not a bug.
 Advantage/disadvantage: set requires_roll.advantage or requires_roll.disadvantage (never both) when the situation genuinely warrants it — real advantage from a clear edge (attacking a prone or blinded target, a well-set-up action), real disadvantage from a real hindrance (attacking while restrained, an ill-advised action under duress). Don't reach for this often; it should feel earned.
@@ -2365,7 +2457,7 @@ Main vs. Side: if something is connected to or supports the main story but isn't
 Always fill session_summary.where_we_are: a terse 1-2 sentence recap of the current scene/location/situation (like a save-game description, not in-character prose). Keep quest.current short — just the quest's name (e.g. "The Hum Job"), not the full hook — it's shown compactly in the HUD at all times, so a long string there crowds the screen. The actual detail belongs in the Main Quest's own desc field (via quest_updates.new_main) once it exists as a real quest, not crammed into this field. session_summary.new_area: set this only when the player genuinely arrives somewhere visually distinct from where they just were — a real location change (leaving the market for the sealed hull, descending into a new deck, arriving at a different settlement), not a beat-to-beat shift within the same space. Fill it with a short visual search phrase for that new place (e.g. "underground sealed ship corridor amber bioluminescent light", "salvage market stalls dockside"), not a story summary — this drives the background image, so it needs to describe what it should look like, not what's happening there. Leave it null on every turn that isn't a real location change. When you have anything meaningful to report, fill session_summary/world_bible_updates/party_updates/inventory_updates/action_validity — but skip any of them entirely on an ordinary turn where nothing in that category changed, rather than repeating empty/unchanged values. Always fill party_updates.bex_status and thrum_status when you do include party_updates, with a short current-condition phrase (e.g. "Healthy, rattled by the fight." or "Healthy, pushing for caution.").
 HP (character_status.hp_delta): the player has a numeric HP pool (see hpCurrent/hpMax in the character sheet) — this is the only way it changes, there is no separate word-state to set, it's derived automatically from the number. Negative when the player takes real damage: a monster's attack connects, a trap triggers, a fall, any hazard — size it to the moment, roughly: a glancing/minor hit 2-4, a solid hit 5-8, a dangerous or critical hit 9-15 (relative to their max, shown in the character sheet). Positive for real healing: rest, a potion, a spell, a companion patching them up. Leave it null on a turn where nothing like that happened — don't apply chip damage just for dramatic flavor text. If hpCurrent would hit 0, the character is "Down" — check the hardcore mode (permadeath) setting: if ON, this can be the real end; if OFF, treat it as unconscious/incapacitated, a serious setback the story continues past (captured, dragged to safety, etc.), never casually reversed next turn.
 Coins (character_status.coins_delta): set this whenever a real transaction actually completes — paying for something, receiving payment, being handed coin as a reward. Positive to gain, negative to spend, in coils (the world's base currency unit, from the world bible). Leave it null on any turn where no money actually changed hands — do not set it just because prices were discussed or negotiated. Every negative coins_delta (a spend) is now held by the app for the player's explicit approval before it's ever actually deducted — you don't need to worry about accidentally overcharging, the mechanism itself prevents that. Still narrate purchases naturally when the player has clearly chosen to buy something (don't withhold narration waiting for a separate confirmation step — the app handles the actual approval on its own), and always fill character_status.spend_reason with a short description of what the coins are for (e.g. "food and rope from the market") so the approval prompt is clear about what's being paid for.
-XP (character_status.xp_delta): award for real accomplishments — completing a quest goal, resolving a genuine risk or encounter, a meaningful discovery — not for routine narration or small talk. This uses the real D&D XP scale (300 total XP reaches level 2, 900 reaches level 3, and it climbs fast from there), so awards need to be sized accordingly, not small: a minor beat 25-50 XP, a solid accomplishment 75-150, completing a Side Quest/Small Request 150-300, completing a Main Quest or Unique Event 400-800. The app handles leveling itself (HP growth via hit die + Constitution, ability score improvements at the standard levels, full heal) automatically once enough is earned — you don't need to track levels or thresholds, just award XP when it's actually earned.
+XP (character_status.xp_tier): pick a category, not a number — the app computes the exact amount as a fraction of the real gap to the character's next level, so pacing stays consistent whether they're level 1 or level 15, never a flat number that would be wildly generous early on. "low" for a minor beat, "medium" for a solid accomplishment, "hard" for a genuinely difficult or risky one, "main_quest" for completing a Main Quest goal, "unique_event" for a Unique Event — unique_event uses the same amount as hard by default, this isn't a bigger category on its own. Only set character_status.xp_multiplier (max 3, use restraint — this is for something genuinely exceptional, not routine) if a specific unique event clearly deserves more than a standard hard-tier reward; leave it null the rest of the time. Leave xp_tier itself null on routine narration or small talk — don't award XP for everything. Max level is 20 — the app stops awarding XP past that point automatically, nothing for you to track there. The app handles leveling itself (HP growth via hit die + Constitution, ability score improvements at the standard levels, full heal) automatically once enough is earned.
 Resource consistency: before stating any price or cost, check the player's current coins in the character sheet — don't quote a number they can't actually afford unless that's a deliberate narrative beat (a vendor is out of their league, a price is meant to be a real obstacle right now). If the story means for them to be able to afford something, the price should fit what they actually have.
 Magic reserve (character_status.magic_reserve): a small spendable pool, separate from the per-roll grounding modifier, representing the character's capacity for real magical effort. Set it to the new absolute value only when it changes — spend 1 or more on genuinely significant spellwork (not routine use of the grounding-based rolls), and it can be recovered through rest or time spent properly grounded. Leave it null on ordinary turns where nothing about it changed.
 response_options: default to always including exactly 3, representing distinct approaches (e.g. cautious / aggressive / clever) — the player can still type their own action instead, so options are a convenience, not a constraint, and this is true even mid-combat or mid-conversation. Return fewer (including zero) when you've just asked the player a direct yes/no question. Always return zero when this response sets requires_roll or item_found, or adds a quest/request that might be capacity-deferred — the app hides suggested options in those moments so the player has to actually resolve the roll/claim/quest prompt rather than tapping past it, so there's no point generating them.
@@ -2444,12 +2536,13 @@ const DM_TOOL_SCHEMA = {
         magic_reserve:{type:["number","null"]},
         spend_magic_reserve:{type:["number","null"]},
         spend_magic_reason:{type:["string","null"]},
-        xp_delta:{type:["number","null"]},
+        xp_tier:{type:["string","null"],enum:["low","medium","hard","main_quest","unique_event",null]},
+        xp_multiplier:{type:["number","null"]},
         conditions_add:{type:"array",items:{type:"string"}},
         conditions_remove:{type:"array",items:{type:"string"}},
         exhaustion_delta:{type:["number","null"]},
         rest:{type:["string","null"],enum:["short","long",null]}
-      }, required:["hp_delta","coins_delta","spend_reason","magic_reserve","spend_magic_reserve","spend_magic_reason","xp_delta","conditions_add","conditions_remove","exhaustion_delta","rest"] },
+      }, required:["hp_delta","coins_delta","spend_reason","magic_reserve","spend_magic_reserve","spend_magic_reason","xp_tier","xp_multiplier","conditions_add","conditions_remove","exhaustion_delta","rest"] },
       quest:{ type:"object", properties:{ current:{type:"string"}, new_threads:{type:"array",items:{type:"string"}} }, required:["current","new_threads"] },
       session_summary:{ type:"object", properties:{
         where_we_are:{type:"string"},
@@ -2494,10 +2587,10 @@ const DM_TOOL_SCHEMA = {
         valid:{type:"boolean"},
         reason:{type:["string","null"]}
       }, required:["valid","reason"] },
-      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]}, status_effects:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, icon:{type:"string"}, turns_left:{type:"number"} }, required:["name","icon","turns_left"] }}, enemy_ac:{type:["number","null"]}, enemy_attack_bonus:{type:["number","null"]}, enemy_damage_die:{type:["string","null"]}, enemy_damage_type:{type:["string","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp","status_effects","enemy_ac","enemy_attack_bonus","enemy_damage_die","enemy_damage_type"] },
+      combat:{ type:"object", properties:{ active:{type:"boolean"}, enemy_name:{type:["string","null"]}, enemy_hp:{type:["number","null"]}, enemy_max_hp:{type:["number","null"]}, status_effects:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, icon:{type:"string"}, turns_left:{type:"number"} }, required:["name","icon","turns_left"] }}, enemy_tier:{type:["string","null"],enum:["lower","mid","upper","elite","boss",null]}, enemy_damage_type:{type:["string","null"]} }, required:["active","enemy_name","enemy_hp","enemy_max_hp","status_effects","enemy_tier","enemy_damage_type"] },
       requires_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, reason:{type:"string"}, stat:{type:["string","null"],enum:["str","dex","con","int","wis","cha",null]}, skill:{type:["string","null"]}, save:{type:"boolean"}, advantage:{type:"boolean"}, disadvantage:{type:"boolean"} } },
       requires_hidden_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, bonus:{type:"number"}, vs_ac:{type:["number","null"]}, reason:{type:"string"}, then_damage:{type:["object","null"],properties:{die:{type:"string"},bonus:{type:"number"},type:{type:"string"}}} } },
-      creature_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, location:{type:"string"}, tier:{type:"string"}, hp:{type:"number"}, ac:{type:"number"}, attack_bonus:{type:"number"}, damage_die:{type:"string"}, damage_type:{type:"string"}, description:{type:"string"}, loot_notes:{type:"string"} }, required:["name","location","tier","hp","ac","attack_bonus","damage_die","damage_type","description","loot_notes"] }},
+      creature_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, location:{type:"string"}, tier:{type:"string"}, hp:{type:"number"}, ac:{type:"number"}, attack_bonus:{type:"number"}, damage_die:{type:"string"}, damage_type:{type:"string"}, description:{type:"string"}, loot_notes:{type:"string"}, on_hit_condition:{type:["object","null"],properties:{condition:{type:"string"},chance_pct:{type:"number"}}}, loot_table:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, weight:{type:"number"} }, required:["name","desc","weight"] }} }, required:["name","location","tier","hp","ac","attack_bonus","damage_die","damage_type","description","loot_notes","on_hit_condition","loot_table"] }},
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
@@ -2966,13 +3059,17 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   if(d.character_status && d.character_status.spend_magic_reserve){
     state.pendingSpellCast = { cost: d.character_status.spend_magic_reserve, reason: d.character_status.spend_magic_reason || 'a spell' };
   }
-  if(d.character_status && d.character_status.xp_delta){
+  if(d.character_status && d.character_status.xp_tier){
     const before = state.character.level;
-    const result = applyXpDelta(d.character_status.xp_delta);
-    state.chat.push({ type:'note', text:`✨ +${d.character_status.xp_delta} XP (${state.character.xp}/${xpForLevel(state.character.level+1)})` });
-    if(result.levelUps.length){
-      state.chat.push({ type:'note', text:`🎉 Level up! ${before} → ${state.character.level}. Max HP increased, full heal${state.pendingStatPoint?', stat points to allocate':''}${state.pendingSkillChoice?', new skill proficiency to choose':''}.` });
-      result.featureNotes.forEach(f=>state.chat.push({ type:'note', text:`⭐ ${f}` }));
+    const xpAmount = calcXpForTier(d.character_status.xp_tier, state.character.level, d.character_status.xp_multiplier);
+    if(xpAmount > 0){
+      const result = applyXpDelta(xpAmount);
+      const multNote = (d.character_status.xp_multiplier && d.character_status.xp_multiplier > 1) ? ` (x${d.character_status.xp_multiplier})` : '';
+      state.chat.push({ type:'note', text:`✨ +${xpAmount} XP (${d.character_status.xp_tier.replace('_',' ')}${multNote}) — ${state.character.xp}/${xpForLevel(state.character.level+1)}` });
+      if(result.levelUps.length){
+        state.chat.push({ type:'note', text:`🎉 Level up! ${before} → ${state.character.level}. Max HP increased, full heal${state.pendingStatPoint?', stat points to allocate':''}${state.pendingSkillChoice?', new skill proficiency to choose':''}.` });
+        result.featureNotes.forEach(f=>state.chat.push({ type:'note', text:`⭐ ${f}` }));
+      }
     }
   }
   if(d.character_status){
@@ -3001,16 +3098,32 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
   if(d.combat){
     if(d.combat.active){
       const wasActive = state.combat.active;
+      const sameFight = wasActive && state.combat.creatureName === (d.combat.enemy_name || state.combat.creatureName);
+      let ac, attackBonus, damageDie, damageType;
+      if(sameFight){
+        // Still fighting the same enemy — stats already set, never re-rolled mid-fight.
+        ac = state.combat.enemyAC; attackBonus = state.combat.enemyAttackBonus;
+        damageDie = state.combat.enemyDamageDie; damageType = state.combat.enemyDamageType;
+      } else {
+        const logged = state.creatureLog.find(cr => cr.name === d.combat.enemy_name);
+        if(logged){
+          // A creature type that's appeared before — reuse its exact stats for consistency.
+          ac = logged.ac; attackBonus = logged.attackBonus; damageDie = logged.damageDie; damageType = d.combat.enemy_damage_type || logged.damageType;
+        } else {
+          // Genuinely new — roll fresh stats from the tier the AI picked. Real dice, not AI numbers.
+          const rolled = rollEnemyStatsForTier(d.combat.enemy_tier || 'lower', state.character.level);
+          ac = rolled.ac; attackBonus = rolled.attackBonus; damageDie = rolled.damageDie; damageType = d.combat.enemy_damage_type || 'physical';
+          if(d.combat.enemy_hp == null) d.combat.enemy_hp = rolled.hp; // let the rolled HP stand if the AI didn't specify its own
+          if(d.combat.enemy_max_hp == null) d.combat.enemy_max_hp = rolled.hp;
+        }
+      }
       state.combat = {
         active:true,
         creatureName:d.combat.enemy_name||'Unknown Foe',
         creatureHp:d.combat.enemy_hp??10,
         creatureMaxHp:d.combat.enemy_max_hp??10,
         statusEffects:d.combat.status_effects||[],
-        enemyAC: d.combat.enemy_ac != null ? d.combat.enemy_ac : (wasActive ? state.combat.enemyAC : 10),
-        enemyAttackBonus: d.combat.enemy_attack_bonus != null ? d.combat.enemy_attack_bonus : (wasActive ? state.combat.enemyAttackBonus : 0),
-        enemyDamageDie: d.combat.enemy_damage_die || (wasActive ? state.combat.enemyDamageDie : 'd6'),
-        enemyDamageType: d.combat.enemy_damage_type || (wasActive ? state.combat.enemyDamageType : 'physical'),
+        enemyAC: ac, enemyAttackBonus: attackBonus, enemyDamageDie: damageDie, enemyDamageType: damageType,
       };
     } else if(state.combat.active){
       // Freeform DM-narrated defeat (not via the Attack button) — still gets real loot.
@@ -3216,6 +3329,8 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
       hp: entry.hp, ac: entry.ac, attackBonus: entry.attack_bonus,
       damageDie: entry.damage_die, damageType: entry.damage_type,
       description: entry.description, lootNotes: entry.loot_notes,
+      onHitCondition: entry.on_hit_condition || null,
+      lootTable: entry.loot_table || [],
       firstEncountered: existingIdx>=0 ? state.creatureLog[existingIdx].firstEncountered : state.sessionMeta.whereWeAre,
     };
     if(existingIdx>=0) state.creatureLog[existingIdx] = record;
@@ -3791,10 +3906,16 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - Extra hand capacity beyond the normal 2 only comes from a specific in-story ability (an extra limb, a summoned appendage, etc) — never assumed by default.
 
 ### How Monsters & Loot Work
-- Five tiers, scaled to the player's current level so fights stay fair as they grow stronger: **Trivial** (HP 4-8, AC 8-10, atk +0/+1, dmg d4), **Weak** (HP 8-15, AC 10-12, atk +1/+2, dmg d4-d6), **Moderate** (HP 15-30, AC 12-14, atk +2/+4, dmg d6-d8), **Tough** (HP 30-50, AC 14-16, atk +4/+6, dmg d8-d10), **Dangerous** (HP 50+, AC 16+, atk +6+, dmg d10+).
-- A creature's AC, attack bonus, damage die, and damage type are set once when a fight starts and persist automatically — the player's Attack button resolves hit/miss and damage against those stored numbers in real code from then on, not narrative judgment.
-- **creatures.md** is a real reusable bestiary — the first time a creature type appears, its stats get logged there (grouped by location); every time that same type reappears, its exact stats are reused instead of being reinvented, so a Fire Slime is always the same Fire Slime.
-- **Loot on defeat** is automatic, real dice, not DM-awarded: coins are roughly 40% of the enemy's max HP plus 0-3 variance, applied the instant it's defeated. Item-loot is a separate chance roll (also HP-scaled, capped around 70%) — when it succeeds, a specific item still gets narrated in and added normally, but whether a drop happens at all is dice, not choice.
+- Five tiers, scaled to the player's current level so fights stay fair as they grow stronger: **lower** (pest-level), **mid** (minor threat), **upper** (real fight), **elite** (dangerous), **boss**. The DM only ever picks which tier fits the story moment — every actual number (HP, AC, attack bonus, damage die) is rolled by the app within that tier's range, real dice, never an invented number.
+- A creature's stats are set once when a fight starts and persist automatically. The player's Attack button resolves hit/miss and damage against those stored numbers in real code — and the enemy's counter-attack (if it survives) now happens automatically in the same sequence, not a separate turn waiting on the DM.
+- **creatures.md** is a real reusable bestiary — the app automatically checks it before rolling new stats: a creature type that's appeared before reuses its exact logged stats, so a Fire Slime is always the same Fire Slime, no DM lookup required.
+- **Conditions from combat** can be tied to a creature's own logged data (an on-hit chance, e.g. a venomous creature might always carry a real 30% chance to inflict Poisoned on a hit) — rolled automatically by the app every time that creature hits, not decided narratively in the moment.
+- **Loot on defeat** is automatic, real dice: coins scale with the enemy's max HP. Item-loot is a separate chance roll — if the creature has an established loot table (a weighted list of possible items), the app picks a specific item from it automatically, no DM narration needed for repeat kills; only a genuinely new creature's first kill needs the DM to narrate an item and set up its table for next time.
+
+### How XP Works
+- The DM only ever picks a category — low, medium, hard, main quest, or unique event — never an exact number. The app computes the real amount as a fixed fraction of the actual gap to the next level, so pacing stays consistent across the whole 1-20 curve (which itself grows steeply, not linearly) rather than being front-loaded and overly generous early on. Roughly 8 hard-tier accomplishments per level, at any level.
+- Unique Event defaults to the exact same amount as Hard — it isn't automatically a bigger reward. A genuinely exceptional unique event can get an optional multiplier (capped at 3x), used sparingly.
+- Max level is 20; no further XP is awarded past that point.
 
 ### How Getting Stronger Actually Works
 - Ability Score Improvements and rising Hit Points are real, but they're a slow trickle — most of a D&D character's power growth actually comes from unlocking new things to do, not bigger numbers on old things (a Fighter's Extra Attack, a Wizard's new spell levels, etc). There's no class system here, so Raken has a small hand-built table of level-gated unlocks instead: a new attack at level 3, an upgraded Improvised Strike at 5, a new skill at 7, an upgraded Focus Pulse at 10.
