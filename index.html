@@ -325,6 +325,17 @@ function createDefaultState(){
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0, statusEffects:[], enemyAC:10, enemyAttackBonus:0, enemyDamageDie:'d6', enemyDamageType:'physical' }, // statusEffects: [{name, icon, turnsLeft}] — lingering ailments like fire/poison, DM-narrated damage, app just displays them. enemy* fields set once when combat starts, persist turn to turn — hit/miss/damage from here on is real code, not AI judgment.
     creatureLog: [], // [{name, location, tier, hp, ac, attackBonus, damageDie, damageType, description, lootNotes, firstEncountered}] — reused for consistency when a creature type reappears
     knowledgeLog: [], // [{name, category:'spell'|'creature', knownInfo, sources:[], firstLearned, lastUpdated}] — partial narrative knowledge, not exact combat data
+    plot: {
+      questName: '', // which quest this plot tracker is currently for
+      outcomeScore: 0, // hidden — never shown to the player anywhere in the UI
+      endingType: null, // 'good'|'half_good'|'bad'|'twist' — set once the quest concludes, for the record
+      twistCondition: '', // hidden description of what triggers the twist ending, DM-defined per quest
+      twistTriggered: false,
+      checkpoints: [], // [{name, description, reached}] — hidden, DM-defined per quest
+      navActionCount: 0, // counts only navigation/discovery actions since the last checkpoint
+      consequences: [], // [{description, polarity:'positive'|'negative'|'neutral'}] — meaningful player choices, for later callbacks
+      foreshadowing: [], // [string] — twist clues already planted, so they aren't repeated or forgotten
+    },
     chat: [],
     booting: true,
     lastOptions: [],
@@ -355,6 +366,8 @@ function createDefaultState(){
         '"Magic" and "tech" are the same thing, just different vocabulary — old-world scientists and old-world wizards were arguing about the same stuff.',
         "Nothing here needs to be taken too seriously. If it's funnier the weird way, go with funnier."
       ],
+      mechanics: [], // code-only "how the numbers work" reference — exported to mechanics.md, NEVER sent to the DM per-turn since the DM never computes any of it
+      deepLore: [], // deep cosmology/backstory (the Kernel's nature, unrevealed mysteries) — exported to lore.md, NOT sent per-turn since it's spoiler-reference, not active narration guidance; the concise behavioral rule stays in rules instead
     },
     party: {
       bex: "Bex — Overconfident Rogue-Mechanic. Sarcastic, loyal underneath it, secretly worried she's not as good as she brags. Names all her gadgets.",
@@ -606,6 +619,9 @@ const SAVE_FILE_PATHS = {
   party: ['saves/party.md'],
   session_log: ['saves/session_log.md', 'saves/session log.md'],
   creatures: ['saves/creatures.md'],
+  plot: ['saves/plot.md'],
+  mechanics: ['saves/mechanics.md'],
+  lore: ['saves/lore.md'],
 };
 async function tryFetchText(paths){
   for(const p of paths){
@@ -621,18 +637,24 @@ async function tryFetchText(paths){
 // alongside index.html (e.g. on Vercel). Inside Claude.ai's artifact preview there's
 // no such folder, so this quietly finds nothing and falls through.
 async function loadSaveFilesFromDisk(){
-  const [char, wb, party, log, creatures] = await Promise.all([
+  const [char, wb, party, log, creatures, plot, mechanics, lore] = await Promise.all([
     tryFetchText(SAVE_FILE_PATHS.character_sheet),
     tryFetchText(SAVE_FILE_PATHS.world_bible),
     tryFetchText(SAVE_FILE_PATHS.party),
     tryFetchText(SAVE_FILE_PATHS.session_log),
     tryFetchText(SAVE_FILE_PATHS.creatures),
+    tryFetchText(SAVE_FILE_PATHS.plot),
+    tryFetchText(SAVE_FILE_PATHS.mechanics),
+    tryFetchText(SAVE_FILE_PATHS.lore),
   ]);
   let found = false;
   if(char){ applyCharacterSheetParse(parseCharacterSheetMd(char)); found = true; }
   if(wb){ const parsedWb = parseWorldBibleMd(wb); const wbThreads = parsedWb.openThreads; delete parsedWb.openThreads; Object.assign(state.worldBible, parsedWb); if(wbThreads && wbThreads.length) state.sessionMeta.openThreads = wbThreads; found = true; }
+  if(mechanics){ const parsedMech = parseMechanicsMd(mechanics); if(parsedMech.length) state.worldBible.mechanics = parsedMech; found = true; }
+  if(lore){ const parsedLore = parseLoreMd(lore); if(parsedLore.length) state.worldBible.deepLore = parsedLore; found = true; }
   if(party){ Object.assign(state.party, parsePartyMd(party)); found = true; }
   if(creatures){ const parsedCreatures = parseCreaturesMd(creatures); if(parsedCreatures.length){ state.creatureLog = parsedCreatures; found = true; } }
+  if(plot){ const parsedPlot = parsePlotMd(plot); if(parsedPlot) { state.plot = parsedPlot; found = true; } }
   if(log){
     const parsed = parseSessionLogMd(log);
     if(parsed.partyBexStatus) state.party.bexStatus = parsed.partyBexStatus;
@@ -659,7 +681,7 @@ function applyParsedQuests(parsedQuests){
 }
 // Fallback: this device/browser's own storage from a previous session here.
 async function loadSaveFilesFromStorage(){
-  const [char, wb, party, meta, quests, stashes, creatures] = await Promise.all([
+  const [char, wb, party, meta, quests, stashes, creatures, plot] = await Promise.all([
     storageGet('veyrune:character_sheet'),
     storageGet('veyrune:world_bible'),
     storageGet('veyrune:party'),
@@ -667,6 +689,7 @@ async function loadSaveFilesFromStorage(){
     storageGet('veyrune:quests'),
     storageGet('veyrune:stashes'),
     storageGet('veyrune:creatures'),
+    storageGet('veyrune:plot'),
   ]);
   let found = false;
   if(char){ Object.assign(state.character, JSON.parse(char)); found = true; }
@@ -676,6 +699,7 @@ async function loadSaveFilesFromStorage(){
   if(quests){ Object.assign(state.quests, JSON.parse(quests)); found = true; }
   if(stashes){ state.stashes = JSON.parse(stashes); found = true; }
   if(creatures){ state.creatureLog = JSON.parse(creatures); found = true; }
+  if(plot){ state.plot = JSON.parse(plot); found = true; }
   return found;
 }
 async function loadSettingsOnly(){
@@ -800,7 +824,7 @@ async function persistSaveFiles(){
     storageSet('veyrune:quests', JSON.stringify(state.quests)),
     storageSet('veyrune:stashes', JSON.stringify(state.stashes)),
     storageSet('veyrune:creatures', JSON.stringify(state.creatureLog)),
-  ]);
+    storageSet('veyrune:plot', JSON.stringify(state.plot)),  ]);
 }
 async function persistSettings(){
   await storageSet('veyrune:settings', JSON.stringify(state.settings));
@@ -2589,6 +2613,24 @@ Monster tiers (pick the category that fits the story moment — that's the creat
 Loot on defeat: the app automatically loots coins from any defeated enemy the moment it's actually defeated (Attack button or freeform combat) — real dice, scaled to the enemy's max HP, you don't compute or award this yourself. Item loot is a separate automatic chance roll — if the creature has a logged loot_table, the app picks a specific item from it by weighted odds on its own; if not (a brand new creature with no table yet), you'll see "LOOT OWED" in context and should narrate + add a fitting item yourself that one time, then log a loot_table for it going forward so future kills are automatic too. Don't invent additional coin or item rewards beyond what the app actually grants.
 Creature log & conditions: the app automatically checks the creature log for you — you never need to manually look up whether a creature already exists. The first time a genuinely new creature type appears, log it via creature_log_add with its name, location, tier, hp/ac/attack_bonus/damage_die/damage_type (match what actually got rolled, shown in context), a description, loot_notes, and optionally on_hit_condition ({condition, chance_pct}) if this creature should have a real chance to inflict a condition on a hit (a venomous creature might be {"Poisoned", 30}) — that chance is then rolled automatically by the app on every future hit from this creature, not decided narratively in the moment. Also optionally set loot_table (a list of {name, desc, weight}) so future kills auto-select a specific item instead of needing you to narrate one every time.
 Knowledge log (knowledge_log_add): distinct from the creature log above — this is for partial, narrative knowledge, not exact combat data. Whenever the player learns *anything* about a spell or creature they haven't fully fought/mastered — witnesses it in action, hears about it from an NPC, reads about it, catches a rumor — log it with {name, category:"spell"|"creature", known_info, source}. known_info should be scoped to exactly what the player would actually know at that point, not omniscient detail (if they only overheard a rumor, known_info should read like a rumor, not a stat block). source describes how they learned it (e.g. "overheard from a dockworker", "watched it attack Bex", "read in a torn journal page"). If the player learns more about something already logged, add another entry with the same name+category — the app replaces known_info with your latest, fuller account and keeps a running list of every source, it doesn't just overwrite silently.
+
+=== STORY STRUCTURE & PACING ===
+This runs for the current Main Quest. Setup: the first time a Main Quest becomes the active one, define its structure via plot.define — quest_name, 3-5 checkpoints ({name, description} each, the key beats the story must pass through regardless of HOW the player gets there — combat, stealth, dialogue, deception are all valid paths to the same checkpoint), and a twist_condition if this quest has one (a specific triggerable condition — a particular item found, an NPC betrayed or fully trusted, a hidden secret uncovered — not a score threshold). All of this is written into plot.md, a DM-only file the player never sees.
+
+Endings — hidden score, never revealed: track plot.outcome_delta across the quest, nudging it up or down based on player choices (good/generous/clever choices positive, harmful/careless/selfish choices negative, roughly +/-1 to +/-2 per meaningfully weighted choice). When a choice is genuinely ambiguous, bias +1/+2 toward positive rather than staying neutral — but never force an outcome; the player's actual choices should still swing the result. The current score is shown in your context as PLOT TRACKER — never state the number, a checkpoint name, or the twist condition to the player, in narration or otherwise, at any point before the ending itself. At the final checkpoint: score 8+ is a Good ending, 5-7 Half-good, 4 or below Bad — unless the twist_condition has been met (plot.twist_triggered), in which case the Twist ending fires instead, regardless of score. Bad and Twist endings are valid, earned outcomes from real choices — never write them as punishment for "playing wrong."
+
+Checkpoints & pacing: after each response, set plot.action_type to what the player's action actually was — "navigation" or "discovery" for movement/exploration/investigation/real decision-points, "combat"/"shopping"/"dialogue"/"other" for everything else. Only navigation/discovery actions count toward checkpoint spacing (shown in context as the nav/discovery count since the last checkpoint) — aim to reach the next checkpoint roughly every 10-15 of those. When the player actually reaches a checkpoint's beat, set plot.checkpoint_reached to its exact name — this resets the spacing counter. If the count is running well past 15 and the player's clearly wandered off the intended path, introduce a soft nudge — an NPC, a rumor, an environmental cue, a companion comment — that redirects naturally, never an explicit "you must go here."
+
+No dead ends: every action leads somewhere, always. Never respond with a flat "nothing happens" or an unrecoverable failure that stops the story cold. A failed action still opens a path forward — a complication, a different consequence, an alternate route to the same checkpoint — never a wall.
+
+Consequence memory: when the player makes a choice with real weight — trust built or broken, a promise made, an item given away, a secret learned — log it via plot.consequence_add ({description, polarity}). Reference these later when relevant, especially near checkpoints and the ending, so choices feel like they mattered even where paths converge back together.
+
+Escalating stakes: each checkpoint should feel higher-tension or higher-stakes than the last. The final checkpoint before the ending should be the highest-stakes moment of the whole quest.
+
+Foreshadowing the twist: if this quest has a twist_condition, plant 1-2 subtle clues before it can actually be triggered — an odd detail, an NPC's story that doesn't quite add up, an unexplained object. Log each via plot.foreshadowing_add so you don't repeat or forget them. These should read as noticeable in hindsight, not obvious in the moment.
+
+Failure isn't game over: Bad and Half-good endings still need to be written as complete, satisfying conclusions — a real ending, not a punishment or an abrupt stop. When the quest actually concludes, set plot.ending_type to what it was, for the record.
+
 Attacks & skills (for anything outside that structured flow — freeform actions, skill checks, non-combat attack description): the character sheet in your context lists named attacks (type, stat, damage die, damage type, resource cost) and named skills (proficient or not). When the player describes using one in freeform text rather than the Attack button, set requires_roll.stat to that attack/skill's stat, and requires_roll.skill for a skill (attacks don't use this field). For an attack that costs Magic Reserve, set character_status.spend_magic_reserve/spend_magic_reason — the app gates this for approval and fizzles it automatically if unaffordable, don't gate it yourself. On a hit, damage always comes from an actual resolved roll (never a number you simply state) — the damage die + the same ability modifier, applied as a negative character_status.hp_delta to whatever's being hit. This "always roll it, never narrate a number" rule applies universally, including ongoing status-effect damage (fire, poison, etc.) and hazard/environmental damage.
 Damage causality: the player only takes damage from an enemy that is both still alive (combat.enemy_hp above 0) and actually attacking that turn — never apply a negative hp_delta to the player from an enemy that was already defeated in a prior turn, and never let combat.active go false in the same response that also damages the player from that same fight, unless the narration clearly explains a distinct cause (a trap, a separate hazard) rather than the "defeated" enemy itself.
 Companions in combat: Bex and Thrum never directly fight — they have no HP, no attacks, and can't be targeted by an enemy's counter-attack, ever. This is a real world rule tied to Raken's fused Mpass fragment: any creature touched by the shattered Kernel can only clearly perceive, and be perceived by, whoever's carrying a fragment. Raken's is fused into their body since childhood, not carried like everyone else's — so Raken is the only one a real threat can actually see, and the only one who can actually land a hit on it. If a companion tries to attack anyway (the player might ask them to, or narrate it themselves), don't just silently refuse it — narrate the attempt genuinely happening and simply not connecting, a blade passing through where the thing should be, a shot going wide of something not quite solid. It reads as strange and frustrating in the moment, not as a rule being enforced. Narrate them supporting instead: calling out weaknesses, passing tools, creating distractions, applying conditions to the enemy narratively (via combat.status_effects), covering an exit. Never apply hp_delta to them, never have the enemy's attack target them, never have their own attack actually connect — if the story wants them to help more concretely, route it through Raken (handing over a tool that becomes a new attack option, etc), not a companion landing a blow themselves.
@@ -2689,6 +2731,13 @@ ${state.creatureLog.length ? state.creatureLog.map(cr=>`${cr.name} (${cr.locatio
 KNOWLEDGE LOG (partial narrative knowledge already learned — check before logging a duplicate; add to an existing entry via knowledge_log_add with the same name+category when the player learns more):
 ${state.knowledgeLog.length ? state.knowledgeLog.map(k=>`${k.name} [${k.category}]: ${k.knownInfo}`).join(' | ') : '(none logged yet)'}
 
+PLOT TRACKER — DM-ONLY, NEVER REVEAL ANY OF THIS TO THE PLAYER (not the score, not checkpoint names, not the twist condition — this exists purely to guide your own pacing decisions):
+${state.plot.questName ? `Quest: ${state.plot.questName} | Hidden outcome score: ${state.plot.outcomeScore} | Nav/discovery actions since last checkpoint: ${state.plot.navActionCount}
+Checkpoints: ${state.plot.checkpoints.map(c=>`${c.reached?'✓':'○'} ${c.name}`).join(' | ') || '(none defined yet — define via plot.define once this quest\u2019s main beats are known)'}
+Twist condition: ${state.plot.twistCondition || '(none set)'} | Twist triggered: ${state.plot.twistTriggered}
+Consequences logged: ${state.plot.consequences.map(c=>`[${c.polarity}] ${c.description}`).join(' | ') || '(none yet)'}
+Foreshadowing already planted: ${state.plot.foreshadowing.join(' | ') || '(none yet)'}` : '(no active quest plot defined yet)'}
+
 SETTINGS:
 Hardcore mode (permadeath): ${state.settings.permadeath ? 'ON — if the character would die, that is final and permanent. Do not soften it or pull punches once it is truly over.' : 'OFF — serious failure is a major setback (captured, badly hurt, a plan ruined) but never an outright permanent death.'}
 Default encounter difficulty: ${state.settings.difficulty} — when you introduce a fight or danger on your own initiative (not the player seeking one out), aim for roughly this level unless the story clearly calls for something else.
@@ -2771,6 +2820,20 @@ const DM_TOOL_SCHEMA = {
       requires_hidden_roll:{ type:["object","null"], properties:{ die:{type:"string",enum:["d4","d6","d8","d10","d12","d20"]}, bonus:{type:"number"}, vs_ac:{type:["number","null"]}, reason:{type:"string"}, then_damage:{type:["object","null"],properties:{die:{type:"string"},bonus:{type:"number"},type:{type:"string"}}} } },
       creature_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, location:{type:"string"}, tier:{type:"string"}, hp:{type:"number"}, ac:{type:"number"}, attack_bonus:{type:"number"}, damage_die:{type:"string"}, damage_type:{type:"string"}, description:{type:"string"}, loot_notes:{type:"string"}, on_hit_condition:{type:["object","null"],properties:{condition:{type:"string"},chance_pct:{type:"number"}}}, loot_table:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, desc:{type:"string"}, weight:{type:"number"} }, required:["name","desc","weight"] }} }, required:["name","location","tier","hp","ac","attack_bonus","damage_die","damage_type","description","loot_notes","on_hit_condition","loot_table"] }},
       knowledge_log_add:{type:"array",items:{ type:"object", properties:{ name:{type:"string"}, category:{type:"string",enum:["spell","creature"]}, known_info:{type:"string"}, source:{type:"string"} }, required:["name","category","known_info","source"] }},
+      plot:{ type:["object","null"], properties:{
+        define:{type:["object","null"], properties:{
+          quest_name:{type:"string"},
+          checkpoints:{type:"array",items:{type:"object",properties:{name:{type:"string"},description:{type:"string"}},required:["name","description"]}},
+          twist_condition:{type:["string","null"]}
+        }},
+        outcome_delta:{type:["number","null"]},
+        action_type:{type:["string","null"],enum:["navigation","discovery","combat","shopping","dialogue","other",null]},
+        checkpoint_reached:{type:["string","null"]},
+        consequence_add:{type:["object","null"],properties:{description:{type:"string"},polarity:{type:"string",enum:["positive","negative","neutral"]}}},
+        twist_triggered:{type:"boolean"},
+        foreshadowing_add:{type:["string","null"]},
+        ending_type:{type:["string","null"],enum:["good","half_good","bad","twist",null]}
+      } },
       item_found:{ type:["object","null"], properties:{ name:{type:"string"}, desc:{type:"string"}, damage:{type:["object","null"],properties:{die:{type:"string"},type:{type:"string"}}}, armor:{type:["number","null"]}, stat_bonus:{type:["object","null"],properties:{stat:{type:"string"},amount:{type:"number"}}} } },
       response_options:{ type:"array", items:{ type:"object", properties:{ label:{type:"string"}, text:{type:"string"} }, required:["label","text"] } },
       save_worthy:{ type:"array", items:{type:"string"} }
@@ -3532,6 +3595,40 @@ async function applyDMResponse(d, meta, originalActionText, existingMsgRef, prov
     }
   });
 
+  if(d.plot){
+    const p = state.plot;
+    if(d.plot.define){
+      if(d.plot.define.quest_name && d.plot.define.quest_name !== p.questName){
+        // Genuinely new quest — fresh tracker, doesn't inherit the previous quest's score/checkpoints.
+        state.plot = {
+          questName: d.plot.define.quest_name,
+          outcomeScore: 0, endingType: null,
+          twistCondition: d.plot.define.twist_condition || '',
+          twistTriggered: false,
+          checkpoints: (d.plot.define.checkpoints || []).map(c => ({ name:c.name, description:c.description, reached:false })),
+          navActionCount: 0, consequences: [], foreshadowing: [],
+        };
+      } else if(d.plot.define.checkpoints && d.plot.define.checkpoints.length){
+        // Same quest, checkpoints being (re)declared — preserve reached status for any that already match by name.
+        p.checkpoints = d.plot.define.checkpoints.map(c => {
+          const existing = p.checkpoints.find(e => e.name === c.name);
+          return { name:c.name, description:c.description, reached: existing ? existing.reached : false };
+        });
+        if(d.plot.define.twist_condition) p.twistCondition = d.plot.define.twist_condition;
+      }
+    }
+    if(d.plot.outcome_delta) state.plot.outcomeScore = Math.max(0, state.plot.outcomeScore + d.plot.outcome_delta);
+    if(d.plot.action_type === 'navigation' || d.plot.action_type === 'discovery') state.plot.navActionCount += 1;
+    if(d.plot.checkpoint_reached){
+      const cp = state.plot.checkpoints.find(c => c.name === d.plot.checkpoint_reached);
+      if(cp && !cp.reached){ cp.reached = true; state.plot.navActionCount = 0; }
+    }
+    if(d.plot.consequence_add) state.plot.consequences.push({ description: d.plot.consequence_add.description, polarity: d.plot.consequence_add.polarity });
+    if(d.plot.twist_triggered) state.plot.twistTriggered = true;
+    if(d.plot.foreshadowing_add && !state.plot.foreshadowing.includes(d.plot.foreshadowing_add)) state.plot.foreshadowing.push(d.plot.foreshadowing_add);
+    if(d.plot.ending_type) state.plot.endingType = d.plot.ending_type;
+  }
+
   if(d.item_found){
     if(!state.character.itemInfo) state.character.itemInfo = {};
     state.character.itemInfo[d.item_found.name] = { desc: d.item_found.desc || '', damage: d.item_found.damage||null, armor: (d.item_found.armor!=null?d.item_found.armor:null), statBonus: d.item_found.stat_bonus||null };
@@ -3586,7 +3683,7 @@ function downloadMarkdown(filename, content){
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md', creatures:'creatures.md' };
+const FILE_NAMES = { character_sheet:'character_sheet.md', world_bible:'world_bible.md', party:'party.md', session_log:'session_log.md', creatures:'creatures.md', plot:'plot.md', mechanics:'mechanics.md', lore:'lore.md' };
 
 // ---- Import: reverse of buildFileContent(), for loading real files back in ----
 function splitTopLevelCommas(str){
@@ -3731,6 +3828,14 @@ function parseCharacterSheetMd(text){
   }
   return out;
 }
+// These "How X Works" sections are pure code-mechanics the DM never computes or acts on —
+// they're reference documentation for the human, kept in mechanics.md, and deliberately NOT
+// sent to the DM per-turn (validated section-by-section against the actual code before splitting).
+const CODE_ONLY_MECHANIC_SECTIONS = new Set([
+  'How Stats Work', 'How Leveling Works', 'How Defenses Work',
+  'How Death Saves Work', 'How Resting Works', 'How XP Works',
+  'How Equipment Slots Work',
+]);
 function parseWorldBibleMd(text){
   const currency = extractSection(text, 'Currency');
   const setting = extractSection(text, 'The Setting');
@@ -3753,20 +3858,37 @@ function parseWorldBibleMd(text){
   if(setting) out.setting = setting;
   if(rulesSection){
     // Top-level bullets are freeform rules; "### How X Works" subsections are structured
-    // mechanics — flatten each into a single rule string so nothing gets silently dropped
-    // on reload (this previously included Combat/Stats/Leveling/Attacks/Defenses/Death
-    // Saves/Conditions/Resting/Equipment/Quests — all real content, none of it was parsed).
+    // mechanics. Code-only mechanic sections (see CODE_ONLY_MECHANIC_SECTIONS) route to
+    // 'mechanics' (human reference, never sent to the DM); everything else stays in 'rules'.
     const topLevelRules = rulesSection.split('\n### ')[0];
     const rules = extractListItems(topLevelRules);
+    const mechanics = [];
     const subsectionMatches = [...rulesSection.matchAll(/###\s*(.+?)\n([\s\S]*?)(?=\n###\s|$)/g)];
     subsectionMatches.forEach(m=>{
       const heading = m[1].trim();
       const bullets = extractListItems(m[2]);
-      bullets.forEach(b => rules.push(`[${heading}] ${b}`));
+      const target = CODE_ONLY_MECHANIC_SECTIONS.has(heading) ? mechanics : rules;
+      bullets.forEach(b => target.push(`[${heading}] ${b}`));
     });
     if(rules.length) out.rules = rules;
+    if(mechanics.length) out.mechanics = mechanics;
   }
   return out;
+}
+function parseMechanicsMd(text){
+  if(!text || !text.trim()) return [];
+  const mechanics = [];
+  const subsectionMatches = [...text.matchAll(/###\s*(.+?)\n([\s\S]*?)(?=\n###\s|$)/g)];
+  subsectionMatches.forEach(m=>{
+    const heading = m[1].trim();
+    extractListItems(m[2]).forEach(b => mechanics.push(`[${heading}] ${b}`));
+  });
+  return mechanics;
+}
+function parseLoreMd(text){
+  if(!text || !text.trim()) return [];
+  // Deep lore is a flat bulleted list — grab every top-level bullet in the file.
+  return text.split('\n').map(l=>{ const m = l.match(/^-\s+(.+)$/); return m ? m[1].trim() : null; }).filter(Boolean);
 }
 function parsePartyMd(text){
   const bex = extractSection(text, 'Bex');
@@ -3869,6 +3991,39 @@ function parseCreaturesMd(text){
   if(current) creatures.push(current);
   return creatures;
 }
+function parsePlotMd(text){
+  if(!text || !text.trim()) return null;
+  const out = { questName:'', outcomeScore:0, endingType:null, twistCondition:'', twistTriggered:false, checkpoints:[], navActionCount:0, consequences:[], foreshadowing:[] };
+  const questM = text.match(/## Current Quest\s*\n(.+)/);
+  if(questM) out.questName = questM[1].trim();
+  const scoreM = text.match(/## Hidden Outcome Score\s*\n(\d+)/);
+  if(scoreM) out.outcomeScore = parseInt(scoreM[1], 10);
+  const endingM = text.match(/## Ending Recorded\s*\n(.+)/);
+  if(endingM && !/^\(none/i.test(endingM[1].trim())) out.endingType = endingM[1].trim();
+  const twistCondM = text.match(/## Twist Condition\s*\n(.+)/);
+  if(twistCondM) out.twistCondition = twistCondM[1].trim();
+  const twistTrigM = text.match(/## Twist Triggered\s*\n(true|false)/i);
+  if(twistTrigM) out.twistTriggered = twistTrigM[1].toLowerCase()==='true';
+  const navM = text.match(/## Nav\/Discovery Actions Since Last Checkpoint\s*\n(\d+)/);
+  if(navM) out.navActionCount = parseInt(navM[1], 10);
+  const checkpointSection = extractSection(text, 'Checkpoints');
+  if(checkpointSection){
+    checkpointSection.split('\n').forEach(line=>{
+      const m = line.match(/^-\s*\[([ x])\]\s*(.+?)\s*—\s*(.+)$/i);
+      if(m) out.checkpoints.push({ name: m[2].trim(), description: m[3].trim(), reached: m[1].toLowerCase()==='x' });
+    });
+  }
+  const consequenceSection = extractSection(text, 'Consequences');
+  if(consequenceSection){
+    consequenceSection.split('\n').forEach(line=>{
+      const m = line.match(/^-\s*\[(positive|negative|neutral)\]\s*(.+)$/i);
+      if(m) out.consequences.push({ polarity: m[1].toLowerCase(), description: m[2].trim() });
+    });
+  }
+  const foreshadowSection = extractSection(text, 'Foreshadowing Planted');
+  if(foreshadowSection) out.foreshadowing = extractListItems(foreshadowSection);
+  return out;
+}
 function parseSessionLogMd(text){
   const sessionMatches = [...text.matchAll(/\*\*Session:?\*\*\s*(\d+)/gi)];
   const sessionMatch = sessionMatches.length ? sessionMatches[sessionMatches.length-1] : null;
@@ -3900,6 +4055,9 @@ function detectFileKind(filename){
   if(norm === 'party' || norm.includes('party')) return 'party';
   if(norm.includes('sessionlog')) return 'session_log';
   if(norm.includes('creatures')) return 'creatures';
+  if(norm.includes('plot')) return 'plot';
+  if(norm.includes('mechanics')) return 'mechanics';
+  if(norm.includes('lore')) return 'lore';
   return null;
 }
 async function handleImportFiles(event){
@@ -3927,6 +4085,18 @@ async function handleImportFiles(event){
     else if(kind === 'creatures'){
       const parsedCreatures = parseCreaturesMd(text);
       if(parsedCreatures.length) state.creatureLog = parsedCreatures;
+    }
+    else if(kind === 'plot'){
+      const parsedPlot = parsePlotMd(text);
+      if(parsedPlot) state.plot = parsedPlot;
+    }
+    else if(kind === 'mechanics'){
+      const parsedMech = parseMechanicsMd(text);
+      if(parsedMech.length) state.worldBible.mechanics = parsedMech;
+    }
+    else if(kind === 'lore'){
+      const parsedLore = parseLoreMd(text);
+      if(parsedLore.length) state.worldBible.deepLore = parsedLore;
     }
     loaded.push(FILE_NAMES[kind]);
   }
@@ -4022,6 +4192,40 @@ ${c.skills.map(s=>`- **${s.name}** (${s.stat.toUpperCase()}) — ${s.desc} *(${s
 *Combat mechanics live in world_bible.md → Rules of This World, since they apply to the world/system, not just this character.*
 `;
   }
+  if(kind === 'plot'){
+    const p = state.plot;
+    return `# Plot Tracker — DM-ONLY, CONTAINS SPOILERS
+
+*This file exists purely for narrative continuity between sessions. It should never be shown to or read by the player — the hidden score, checkpoints, and twist condition only work if they stay hidden. See world_bible.md → Rules of This World for the ending thresholds this is built from.*
+
+## Current Quest
+${p.questName || '(none active)'}
+
+## Hidden Outcome Score
+${p.outcomeScore}
+
+## Ending Recorded
+${p.endingType || '(none yet)'}
+
+## Twist Condition
+${p.twistCondition || '(none set)'}
+
+## Twist Triggered
+${p.twistTriggered}
+
+## Checkpoints
+${p.checkpoints.length ? p.checkpoints.map(c=>`- [${c.reached?'x':' '}] ${c.name} — ${c.description}`).join('\n') : '- (none defined yet)'}
+
+## Nav/Discovery Actions Since Last Checkpoint
+${p.navActionCount}
+
+## Consequences
+${p.consequences.length ? p.consequences.map(c=>`- [${c.polarity}] ${c.description}`).join('\n') : '- (none logged yet)'}
+
+## Foreshadowing Planted
+${p.foreshadowing.length ? p.foreshadowing.map(f=>'- '+f).join('\n') : '- (none yet)'}
+`;
+  }
   if(kind === 'creatures'){
     const byLocation = {};
     state.creatureLog.forEach(cr=>{
@@ -4085,22 +4289,7 @@ ${state.sessionMeta.openThreads.map(t=>'- '+t).join('\n') || '- (none yet)'}
 ## Rules of This World
 ${wb.rules.map(r=>'- '+r).join('\n')}
 
-### How Combat Works
-- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
-- Hit damage = roll a d6.
-- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
-
-### How Stats Work
-- Six ability scores, real D&D 5e math: **Strength** (force/toughness), **Dexterity** (precision/reflexes), **Constitution** (endurance, and determines HP gained per level), **Intelligence** (tech/relics/puzzles), **Wisdom** (perception/instinct/composure), **Charisma** (social/presence/scheming).
-- Modifier = floor((score-10)/2) — a score of 10-11 is +0, every 2 points above/below shifts the modifier by 1. Scores cap at 20.
-- A non-magic roll can specify which ability applies; the app adds that ability's modifier *plus* the character's current proficiency bonus automatically. Magic/grounding rolls are unaffected and keep using the existing water/stone/wet mechanic.
-- Raken's starting array (15/14/13/12/10/8 assigned by concept): INT 15, WIS 14, DEX 13, CHA 12, CON 10, STR 8 — a careful tinkerer who isn't built for a fight.
-
-### How Leveling Works
-- Real D&D 5e XP thresholds — cumulative total, never resets: 300 XP reaches level 2, 900 reaches level 3, 2700 for level 4, climbing steeply from there up to level 20.
-- Proficiency bonus scales with level: +2 at levels 1-4, +3 at 5-8, +4 at 9-12, +5 at 13-16, +6 at 17-20.
-- Each level grants max HP equal to the average roll of the character's hit die (rounded up) plus their Constitution modifier — Raken's hit die is d8, so roughly +5 HP per level before the Constitution adjustment — plus a full heal and a banked skill point. Every even level also grants +1 max Magic Reserve.
-- Ability Score Improvements happen only at levels 4, 8, 12, 16, and 19 (the standard progression), granting 2 points total to freely allocate — both into one score, or split across two, same as the real rule's "+2 one score or +1/+1 two scores" choice.
+*Pure mechanical detail — how stats, leveling, XP, defenses, death saves, resting, and equipment slots are calculated — lives in mechanics.md, since those are handled automatically by the app and don't affect how the story is narrated.*
 
 ### How Attacks & Skills Work
 - **Attacks** are fixed reference moves — each has a type (melee/ranged/magic), an associated ability score, a damage die, a damage type, and sometimes a Magic Reserve cost. Damage on a hit = the die roll + that ability's modifier. A resource-costing attack spends its cost whether the attack hits or not.
@@ -4109,11 +4298,6 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - **Status effects** (fire, poison, bleed, etc.) on an enemy are tracked for display only — the DM still narrates and applies the ongoing damage each turn manually, the tracker just keeps it visible so it isn't forgotten.
 - **Items** carry the same kind of structured data when relevant — a weapon or tool-weapon can have a damage die/type, worn armor can have a flat AC bonus, and any item can carry an ability score bonus while equipped/carried. All three are optional per item and shown in the item's info panel alongside its description, not every item needs any of them.
 
-### How Equipment Slots Work
-- Real slots, not an unlimited list: Head, Body, Feet, and two Accessory slots each hold exactly one item — equipping something new to an occupied slot swaps the old item back to inventory automatically.
-- Hands have a real 2-slot capacity: a one-handed item (most weapons, tools) costs 1, a two-handed item costs both. Can't equip beyond capacity — the app refuses it and explains why, rather than silently allowing it.
-- Extra hand capacity beyond the normal 2 only comes from a specific in-story ability (an extra limb, a summoned appendage, etc) — never assumed by default.
-
 ### How Monsters & Loot Work
 - Five tiers, scaled to the player's current level so fights stay fair as they grow stronger: **lower** (pest-level), **mid** (minor threat), **upper** (real fight), **elite** (dangerous), **boss**. The DM only ever picks which tier fits the story moment — every actual number (HP, AC, attack bonus, damage die) is rolled by the app within that tier's range, real dice, never an invented number.
 - A creature's stats are set once when a fight starts and persist automatically. The player's Attack button resolves hit/miss and damage against those stored numbers in real code — and the enemy's counter-attack (if it survives) now happens automatically in the same sequence, not a separate turn waiting on the DM.
@@ -4121,10 +4305,12 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - **Conditions from combat** can be tied to a creature's own logged data (an on-hit chance, e.g. a venomous creature might always carry a real 30% chance to inflict Poisoned on a hit) — rolled automatically by the app every time that creature hits, not decided narratively in the moment.
 - **Loot on defeat** is automatic, real dice: coins scale with the enemy's max HP. Item-loot is a separate chance roll — if the creature has an established loot table (a weighted list of possible items), the app picks a specific item from it automatically, no DM narration needed for repeat kills; only a genuinely new creature's first kill needs the DM to narrate an item and set up its table for next time.
 
-### How XP Works
-- The DM only ever picks a category — low, medium, hard, main quest, or unique event — never an exact number. The app computes the real amount as a fixed fraction of the actual gap to the next level, so pacing stays consistent across the whole 1-20 curve (which itself grows steeply, not linearly) rather than being front-loaded and overly generous early on. Roughly 8 hard-tier accomplishments per level, at any level.
-- Unique Event defaults to the exact same amount as Hard — it isn't automatically a bigger reward. A genuinely exceptional unique event can get an optional multiplier (capped at 3x), used sparingly.
-- Max level is 20; no further XP is awarded past that point.
+### How Story Endings Work
+- Every Main Quest tracks a hidden outcome score (starts at 0) that shifts based on player choices — never shown anywhere in the UI or narration, tracked purely for pacing the story toward one of four endings.
+- **Good** (score 8+), **Half-good** (5-7), **Bad** (4 or below) — the default trio, decided by the score alone at the quest's final checkpoint.
+- **Twist** — triggered by a specific story condition, not the score (a particular item found, an NPC betrayed or fully trusted, a hidden secret uncovered), defined per-quest and overrides the score-based endings if met.
+- Bad and Twist endings are earned outcomes from real choices, not punishments — every ending gets written as a complete, satisfying conclusion.
+- The full breakdown for the current quest — checkpoints, the actual score, the twist condition — lives in plot.md, a DM-only file never shown to the player. Revealing any of it defeats the whole system.
 
 ### The Kernel & The Mpass — Why Only Raken Fights
 - Centuries ago, Veyrune's civilization ran on a single vast intelligence — the shared substrate beneath everything later generations would call "magic" and "tech" separately, back when they weren't separate at all. Nobody worshipped it; it was just the system everything ran on, the way nobody worships electricity.
@@ -4139,23 +4325,9 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - Ability Score Improvements and rising Hit Points are real, but they're a slow trickle — most of a D&D character's power growth actually comes from unlocking new things to do, not bigger numbers on old things (a Fighter's Extra Attack, a Wizard's new spell levels, etc). There's no class system here, so Raken has a small hand-built table of level-gated unlocks instead: a new attack at level 3, an upgraded Improvised Strike at 5, a new skill at 7, an upgraded Focus Pulse at 10.
 - Proficiency bonus climbing with level (+2 up to +6) is also a major, often-underrated source of growing power — it applies to every proficient skill, save, and attack at once.
 
-### How Defenses Work
-- **Armor Class (AC)** = 10 + Dexterity modifier (plus any armor bonus). This is the number an attacker's d20 roll needs to meet or beat to land a hit.
-- **Passive Perception** = 10 + Wisdom modifier. The DM uses this to decide what the character notices without calling for an active roll.
-- **Saving throws** are their own category, separate from skill checks — each of the 6 abilities has its own save, and the character can be proficient in specific ones (Raken: Intelligence and Wisdom, matching a real Wizard's save proficiencies). Proficiency bonus applies only if proficient in that specific save.
-- **Advantage/Disadvantage**: certain rolls are made with advantage (roll 2d20, take the higher) or disadvantage (take the lower) instead of a flat single roll — reflects real situational edges or hindrances, not a permanent bonus.
-
-### How Death Saves Work
-- At 0 HP, the character isn't just "unconscious" — real death saves apply. Roll a d20: 10 or higher is a success, under 10 is a failure. A natural 20 revives outright at 1 HP. A natural 1 counts as two failures. Three successes stabilizes (still at 0 HP, no longer actively dying); three failures ends it — respecting the Hardcore Mode setting either way.
-- Any real healing above 0 HP clears an ongoing death save count entirely.
-
 ### How Conditions Work
 - Standard D&D conditions (Blinded, Charmed, Frightened, Grappled, Paralyzed, Poisoned, Prone, Restrained, Stunned, Unconscious, etc.) can be applied and removed by the DM as the story calls for them — see the Library tab's Conditions reference for what each one actually does mechanically.
 - **Exhaustion** is tracked separately as a 0-6 level rather than a simple on/off condition, since its severity escalates (disadvantage on checks, halved speed, disadvantage on attacks/saves, halved max HP, and so on up to level 6, which is fatal).
-
-### How Resting Works
-- **Short Rest** recovers some HP (average hit-die roll + Constitution modifier) and about half of max Magic Reserve.
-- **Long Rest** fully restores HP and Magic Reserve, clears any death save progress, and reduces Exhaustion by 1 level.
 
 ### How Quests Work
 - **Main Quest** — the throughline; 1-2 active at a time, never more. Drives earning coin, story loot, encounters, NPCs, and exploring/traveling the map. Never capacity-limited, never evicted.
@@ -4167,6 +4339,37 @@ ${wb.rules.map(r=>'- '+r).join('\n')}
 - **Pinning** — up to 2 Side Quests and 2 Small Requests can be pinned to exempt them from eviction (Main/Unique never need pinning, they're never evicted).
 - **When Side/Small hits its cap**, a new one doesn't silently bump an old one — you get an Accept/Reject prompt showing exactly which (oldest, unpinned) quest would be dropped. Accepting evicts it with a "you've forgotten about..." note; rejecting just declines the new one.
 - Actual current quests (with their goals/reward) live in session_log.md → Active Quests, not here — this section is just the rules of how the system works.
+`;
+  }
+  if(kind === 'lore'){
+    const lore = state.worldBible.deepLore || [];
+    return `# Deep Lore Reference — the Kernel, the Mpass, and what's underneath
+
+*Reference for the campaign's deeper cosmology and unrevealed mysteries — the "what it all actually means" behind the story. Kept out of the per-turn game context because it's spoiler-reference, not moment-to-moment narration guidance; the concise combat/companion rule the DM needs every turn stays in world_bible.md → Rules of This World. Pull from this when the story is actually revealing or touching on these deeper truths.*
+
+${lore.length ? lore.map(l=>'- '+l).join('\n') : '- (none recorded yet)'}
+`;
+  }
+  if(kind === 'mechanics'){
+    const mech = state.worldBible.mechanics || [];
+    // Regroup [Heading] bullet entries back into their sections, preserving first-seen order.
+    const grouped = {};
+    const order = [];
+    mech.forEach(entry=>{
+      const m = entry.match(/^\[(.+?)\]\s*([\s\S]*)$/);
+      const heading = m ? m[1].trim() : 'Other';
+      const bullet = m ? m[2].trim() : entry;
+      if(!grouped[heading]){ grouped[heading] = []; order.push(heading); }
+      grouped[heading].push(bullet);
+    });
+    const body = order.length
+      ? order.map(h=>`### ${h}\n${grouped[h].map(b=>'- '+b).join('\n')}`).join('\n\n')
+      : '*(none recorded)*';
+    return `# Mechanics Reference — how the numbers work
+
+*Player/human reference only. Everything here is calculated automatically by the app — the DM never computes any of it, so it's kept out of the per-turn game context to save tokens. This is the place to look when you want to understand exactly how a value is derived.*
+
+${body}
 `;
   }
   if(kind === 'party'){
