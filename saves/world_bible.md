@@ -28,7 +28,7 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 - The Rustlands lie further out to sea past Bellcaster's Reach — no safe charted route, reachable only by experienced crews willing to risk the wreckage field.
 
 ## Notable Artifacts
-- Raken's relic fragment — reactive; warmed for the first time on contact with the ship's distress signal.
+- Raken's relic fragment (an Mpass) — reactive; warmed for the first time on contact with the ship's distress signal. Unlike any other Mpass in Veyrune, it isn't carried — it was fused into Raken's body as a child, during a tribal warrior rite not practiced or understood anywhere else. Can't be removed, handed off, or set aside.
 - The rusted key — has an embedded shard matching the relic fragment's energy signature; fits both the sealed hatch and a pedestal socket downstairs.
 - The dormant egg-shaped object — found paired specifically to Raken's fragment via the pedestal socket; not yet activated.
 - The glyph — three interlocking rings split by a jagged line. Appears on the key, the console, and Old Corr's hidden family disc.
@@ -43,13 +43,14 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 - **Old Corr** — Dock office owner. Confirmed generational family ties to the ship's secrets, passed down through his grandmother. Holds a hidden disc bearing the same glyph as the key/console.
 
 ## Ongoing Threads / Mysteries
-- The relic fragment + family disc pairing — planned for tomorrow, not yet attempted
-- The egg-shaped object — still unpaired with Raken's relic fragment
+- The egg-shaped object — paired with Raken's relic fragment via Corr's disc; confirmed as a "seed-lock," not yet activated
 - The second sealed door and its fresh energy trail — unexplored
 - Port Halloway's full designation (only "...N-3" so far)
 - Why the fleet scattered — deliberately wiped from the ship's log
 - The distant "Anchor-7" distress signal — now calmed, not resolved
 - Raken's fragment origin — increasingly tied to Coralkin history and this fleet; predates Corr's family's knowledge entirely
+- What the Kernel actually was, and whether its shattering and the fleet's scattering were the same event
+- Whether Raken's tribe once understood, and has since forgotten, what these fragments actually are — the warrior rite that fused Raken's fragment isn't practiced or understood by anyone else
 - Bex's excitement about breaking into "forbidden" ship decks — implies she's done this kind of thing before (still unexplored)
 - Thrum's "old temple" comment — teased by Bex, never explained
 - The egg responded to Corr's disc — glyph outline appeared on its surface, now warm to the touch
@@ -60,16 +61,11 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 - "Magic" and "tech" are the same thing, just different vocabulary — old-world scientists and old-world wizards were arguing about the same stuff.
 - Nothing here needs to be taken too seriously. If it's funnier the weird way, go with funnier.
 
-### How Combat Works
-- Attack roll = d20 + grounding modifier, vs a target number the DM sets (typically 10-15).
-- Hit damage = roll a d6.
-- Grounding modifiers: Wet Earth +3, On Water/On Stone +2, Ungrounded -2.
-
 ### How Stats Work
 - Six ability scores, real D&D 5e math: **Strength** (force/toughness), **Dexterity** (precision/reflexes), **Constitution** (endurance, and determines HP gained per level), **Intelligence** (tech/relics/puzzles), **Wisdom** (perception/instinct/composure), **Charisma** (social/presence/scheming).
 - Modifier = floor((score-10)/2) — a score of 10-11 is +0, every 2 points above/below shifts the modifier by 1. Scores cap at 20.
 - A non-magic roll can specify which ability applies; the app adds that ability's modifier *plus* the character's current proficiency bonus automatically. Magic/grounding rolls are unaffected and keep using the existing water/stone/wet mechanic.
-- Raken's starting array (15/14/13/12/10/8 assigned by concept): INT 15, WIS 14, DEX 13, CHA 12, CON 10, STR 8 — a careful tinkerer who isn't built for a fight.
+- Raken's ability scores and hit die live in character_sheet.md → Ability Scores, not restated here.
 
 ### How Leveling Works
 - Real D&D 5e XP thresholds — cumulative total, never resets: 300 XP reaches level 2, 900 reaches level 3, 2700 for level 4, climbing steeply from there up to level 20.
@@ -100,6 +96,15 @@ The standard currency is the **coil** — small stamped discs of copper, silver,
 - The DM only ever picks a category — low, medium, hard, main quest, or unique event — never an exact number. The app computes the real amount as a fixed fraction of the actual gap to the next level, so pacing stays consistent across the whole 1-20 curve (which itself grows steeply, not linearly) rather than being front-loaded and overly generous early on. Roughly 8 hard-tier accomplishments per level, at any level.
 - Unique Event defaults to the exact same amount as Hard — it isn't automatically a bigger reward. A genuinely exceptional unique event can get an optional multiplier (capped at 3x), used sparingly.
 - Max level is 20; no further XP is awarded past that point.
+
+### The Kernel & The Mpass — Why Only Raken Fights
+- Centuries ago, Veyrune's civilization ran on a single vast intelligence — the shared substrate beneath everything later generations would call "magic" and "tech" separately, back when they weren't separate at all. Nobody worshipped it; it was just the system everything ran on, the way nobody worships electricity.
+- It shattered. Nobody remembers why — conflict, catastrophe, something closer to a system failure at civilizational scale — but the fleet's scattering and the Kernel's shattering may be the same event, not two. Every piece of old-tech in Veyrune since, every relic, every reactive fragment, isn't an artifact *from* the Kernel — it's a fragment *of* it, still faintly running, still trying to reconnect with the rest of itself.
+- An **Mpass** is one such fragment — a stamped metal token carved with the same glyph found on the key, the console, and Corr's disc (three interlocking rings split by a jagged line). Nobody in Veyrune knows what it actually is; to the world it's just a required key for anywhere real loot or danger lives — dungeons, Anchor sites, sealed hulls. Guild slang calls it the "Monster Pass," half-joking that it gets you in and gets you killed.
+- **The downside, and the reason only one person per party ever fights:** any Kernel-touched creature can only clearly perceive — and be perceived by — someone carrying a fragment. To a carrier, the creature is fully solid and real. To everyone else, it's not quite there: flickering, out of phase, the way a corrupted signal never fully resolves. A non-carrier's attack doesn't get blocked or refused, it just doesn't land — there's nothing solid there to hit. The creature itself, once a fight starts, can only fixate on the one thing in the room that reads as real to it. It isn't a beacon and doesn't summon danger from a distance — it only matters once a fight has already begun.
+- **Raken's fragment isn't carried, it's fused** — merged into their body as a child, during a warrior rite specific to their tribe, not practiced or understood anywhere else. It can't be removed, handed off, or set aside on a bad day, unlike every other Mpass in the world. Bex and Thrum aren't excluded by choice or law; a Kernel-touched threat simply cannot resolve them as real once a fight begins, and neither can they land a hit on it. Whether that reads as relief, guilt, or quiet resentment for either of them is worth surfacing over time.
+- This reframes Raken's own stated reason for adventuring — hunting down and understanding old-world relics — as something far more personal than curiosity: Raken has carried one, fused into their own body, since before they could understand what it was. Whether the tribal rite was once performed with real knowledge of what these fragments are, since lost or forgotten, remains an open thread.
+- Every reaction Raken's fragment has had — warming at the distress signal, syncing with the egg, pulsing near Corr's disc — is the same being, in pieces, recognizing another part of itself. Corr's grandmother's warning ("never let anyone dig deep into the old hull") may not be superstition, but someone who understood, at least partially, what's actually sleeping in these fragments.
 
 ### How Getting Stronger Actually Works
 - Ability Score Improvements and rising Hit Points are real, but they're a slow trickle — most of a D&D character's power growth actually comes from unlocking new things to do, not bigger numbers on old things (a Fighter's Extra Attack, a Wizard's new spell levels, etc). There's no class system here, so Raken has a small hand-built table of level-gated unlocks instead: a new attack at level 3, an upgraded Improvised Strike at 5, a new skill at 7, an upgraded Focus Pulse at 10.
