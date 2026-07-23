@@ -322,6 +322,7 @@ function createDefaultState(){
     pendingDeathSave: false,
     pendingSpellCast: null, // { cost, reason } — Magic Reserve spend held for approval, same principle as coin payments
     pendingLoot: null, // { creatureName, tier, coins, item } — held for the player's Loot/Ignore choice after a defeat
+    pendingDamageRoll: null, // { attackName, stat, damageDie, damageType, attackTotal } — held after a hit so the player taps to roll damage themselves
     lastDeathSaveRoll: null, // most recent death save d20 result, shown in the modal so the player can see it
     combat: { active:false, creatureName:'', creatureHp:0, creatureMaxHp:0, statusEffects:[], enemyAC:10, enemyAttackBonus:0, enemyDamageDie:'d6', enemyDamageType:'physical' }, // statusEffects: [{name, icon, turnsLeft}] — lingering ailments like fire/poison, DM-narrated damage, app just displays them. enemy* fields set once when combat starts, persist turn to turn — hit/miss/damage from here on is real code, not AI judgment.
     creatureLog: [], // [{name, location, tier, hp, ac, attackBonus, damageDie, damageType, description, lootNotes, firstEncountered}] — reused for consistency when a creature type reappears
@@ -895,9 +896,13 @@ function render(){
         : state.chat.map(renderChatItem).join('') + (state.loading ? `<div class="msg-thinking">The DM is thinking…</div>` : '')
       }</div>
       ${state.combat.active ? renderEnemyStrip() : ''}
-      ${state.lastOptions.length && !state.loading && !state.pendingLoot && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow && !state.pendingPayment && !state.pendingSpellCast && !state.pendingStatPoint && !state.pendingDeathSave && !state.pendingSkillChoice ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
+      ${state.lastOptions.length && !state.loading && !state.pendingDamageRoll && !state.pendingLoot && !state.pendingItemClaim && !state.pendingRoll && !state.pendingQuestOverflow && !state.pendingPayment && !state.pendingSpellCast && !state.pendingStatPoint && !state.pendingDeathSave && !state.pendingSkillChoice ? `<div class="options-row">${state.lastOptions.map(o=>`<button onclick='sendAction(${escAttr(JSON.stringify(o.text))})'>${escHtml(o.label)}) ${escHtml(o.text)}</button>`).join('')}</div>` : ''}
       <div class="composer ${state.oocMode ? 'ooc-active' : ''}">
-        ${state.pendingLoot ? `
+        ${state.pendingDamageRoll ? `
+          <button class="claim-item-btn" style="background:var(--danger); border-color:var(--danger);" onclick="openDamageRollModal()">
+            🎲 Roll Damage — ${escHtml(state.pendingDamageRoll.attackName)} hit!
+          </button>
+        ` : state.pendingLoot ? `
           <button class="claim-item-btn" onclick="openLootModal()">
             💰 Loot ${escHtml(state.pendingLoot.creatureName)}? (${state.pendingLoot.coins} coils${state.pendingLoot.item ? ' + item' : ''})
           </button>
@@ -1207,6 +1212,7 @@ function renderModal(){
   if(m.kind==='monster-info') return renderMonsterInfoModal(m);
   if(m.kind==='lore-info') return renderLoreInfoModal(m);
   if(m.kind==='loot') return renderLootModal();
+  if(m.kind==='damage-roll') return renderDamageRollModal();
   if(m.kind==='ability-info') return renderAbilityInfoModal(m);
   if(m.kind==='edit') return renderEditModal();
   if(m.kind==='preview') return renderPreviewModal(m);
@@ -1704,33 +1710,69 @@ function executeAttack(attack){
   const total = roll + modInfo.mod;
   const hit = total >= combat.enemyAC;
   state.chat.push({ type:'roll', text:`🎲 ${attack.name} attack: ${roll} ${modInfo.mod>=0?'+':''}${modInfo.mod} = ${total} vs AC ${combat.enemyAC} — ${hit?'HIT':'MISS'}` });
-  let damageTotal = 0, defeated = false, loot = null;
   if(hit){
-    const dmgSides = parseInt(attack.damageDie.slice(1), 10);
-    const dmgRoll = rollDie(dmgSides);
-    const dmgMod = abilityMod(c.stats[attack.stat]); // damage uses the raw ability modifier only, not proficiency — real 5e rule
-    damageTotal = Math.max(0, dmgRoll + dmgMod);
-    combat.creatureHp = Math.max(0, combat.creatureHp - damageTotal);
-    state.chat.push({ type:'roll', text:`🎲 Damage: ${dmgRoll} ${dmgMod>=0?'+':''}${dmgMod} = ${damageTotal} ${attack.damageType} (${combat.creatureName} now ${combat.creatureHp}/${combat.creatureMaxHp} HP)` });
-    if(combat.creatureHp <= 0){
-      defeated = true;
-      const name = combat.creatureName, maxHp = combat.creatureMaxHp;
-      combat.active = false;
-      combat.statusEffects = [];
-      state.chat.push({ type:'note', text:`⚔️ ${name} defeated!` });
-      loot = rollLootOutcome(name, maxHp);
-      state.pendingLoot = loot;
-    }
+    // Stop here — the player rolls damage themselves via the Roll Damage button (pendingDamageRoll).
+    // Everything after the damage roll (HP subtraction, defeat, loot, enemy counter) happens in rollAttackDamage.
+    state.pendingDamageRoll = { attackName: attack.name, stat: attack.stat, damageDie: attack.damageDie, damageType: attack.damageType, attackTotal: total };
+    persistSaveFiles();
+    render();
+    return;
   }
-  // If the enemy survived (hit or miss, doesn't matter — a missed swing still uses your turn),
-  // its counter-attack happens automatically right here, no separate AI-decided turn needed.
+  // A miss — no damage to roll, so the enemy's counter-attack happens right away.
+  const counter = executeEnemyCounterAttack();
+  persistSaveFiles();
+  render();
+  const counterNote = counter ? ` Then ${combat.creatureName} counter-attacked: rolled ${counter.total} vs your AC ${counter.playerAC} — ${counter.hit ? `HIT, dealt ${counter.damageTotal} ${counter.damageType} damage${counter.conditionApplied ? `, inflicting ${counter.conditionApplied}` : ''} (you: ${c.hpCurrent}/${c.hpMax} HP)` : 'MISS'}.` : '';
+  sendAction(`(attacked with ${attack.name}: rolled ${total} vs AC ${combat.enemyAC} — MISS.${counterNote})`);
+}
+function rollAttackDamage(){
+  const p = state.pendingDamageRoll;
+  if(!p) return;
+  state.pendingDamageRoll = null;
+  state.modal = null;
+  const c = state.character;
+  const combat = state.combat;
+  const dmgSides = parseInt(p.damageDie.slice(1), 10);
+  const dmgRoll = rollDie(dmgSides);
+  const dmgMod = abilityMod(c.stats[p.stat]); // damage uses the raw ability modifier only, not proficiency — real 5e rule
+  const damageTotal = Math.max(0, dmgRoll + dmgMod);
+  combat.creatureHp = Math.max(0, combat.creatureHp - damageTotal);
+  state.chat.push({ type:'roll', text:`🎲 Damage: ${dmgRoll} ${dmgMod>=0?'+':''}${dmgMod} = ${damageTotal} ${p.damageType} (${combat.creatureName} now ${combat.creatureHp}/${combat.creatureMaxHp} HP)` });
+  let defeated = false, loot = null;
+  if(combat.creatureHp <= 0){
+    defeated = true;
+    const name = combat.creatureName, maxHp = combat.creatureMaxHp;
+    combat.active = false;
+    combat.statusEffects = [];
+    state.chat.push({ type:'note', text:`⚔️ ${name} defeated!` });
+    loot = rollLootOutcome(name, maxHp);
+    state.pendingLoot = loot;
+  }
+  // Enemy survived → its counter-attack fires now, right after your damage lands.
   const counter = defeated ? null : executeEnemyCounterAttack();
   persistSaveFiles();
   render();
   const lootNote = defeated ? ` The player can now loot or ignore the remains (a Loot/Ignore prompt handles it) — available loot: ${loot.coins} coils${loot.item ? ` and ${loot.item.name}` : ''}. Don't award or narrate specific loot items yourself; just narrate the aftermath.${loot.needsDmNarration ? ' (If you want this creature to drop richer items in future, log a loot_table for it via creature_log_add.)' : ''}` : '';
   const counterNote = counter ? ` Then ${combat.creatureName} counter-attacked: rolled ${counter.total} vs your AC ${counter.playerAC} — ${counter.hit ? `HIT, dealt ${counter.damageTotal} ${counter.damageType} damage${counter.conditionApplied ? `, inflicting ${counter.conditionApplied}` : ''} (you: ${c.hpCurrent}/${c.hpMax} HP)` : 'MISS'}.` : '';
-  const summary = `(attacked with ${attack.name}: rolled ${total} vs AC ${combat.enemyAC} — ${hit ? `HIT, dealt ${damageTotal} ${attack.damageType} damage${defeated ? `, ${combat.creatureName} defeated.${lootNote}` : `, enemy now ${combat.creatureHp}/${combat.creatureMaxHp} HP`}` : 'MISS'}.${counterNote})`;
+  const summary = `(attacked with ${p.attackName}: rolled ${p.attackTotal} vs AC ${combat.enemyAC} — HIT, dealt ${damageTotal} ${p.damageType} damage${defeated ? `, ${combat.creatureName} defeated.${lootNote}` : `, enemy now ${combat.creatureHp}/${combat.creatureMaxHp} HP`}.${counterNote})`;
   sendAction(summary);
+}
+function openDamageRollModal(){ state.modal = { kind:'damage-roll' }; render(); }
+function renderDamageRollModal(){
+  const p = state.pendingDamageRoll;
+  if(!p) return '';
+  const c = state.character;
+  const dmgMod = abilityMod(c.stats[p.stat]);
+  return `<div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="sheet" style="text-align:center;">
+      <h3>${escHtml(p.attackName)} — Hit!</h3>
+      <div class="flavor" style="margin-bottom:16px;">Roll ${escHtml(p.damageDie)} ${dmgMod>=0?'+':''}${dmgMod} for ${escHtml(p.damageType)} damage.</div>
+      <div style="font-size:48px; margin:12px 0;">🎲</div>
+      <div class="sheet-actions" style="justify-content:center;">
+        <button class="btn-primary" style="background:var(--danger); border-color:var(--danger); min-width:160px;" onclick="rollAttackDamage()">Roll Damage</button>
+      </div>
+    </div>
+  </div>`;
 }
 function openSpellCastModal(){
   if(!state.pendingSpellCast) return;
